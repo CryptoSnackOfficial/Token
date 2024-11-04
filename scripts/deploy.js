@@ -8,7 +8,6 @@ async function main() {
     const token = await Token.deploy(
         "CryptoS",     // name
         "CRPTS",           // symbol
-        18,              // decimals
         1000000000,         // initial supply
         5,               // selling tax (5%)
         3,               // buying tax (3%)

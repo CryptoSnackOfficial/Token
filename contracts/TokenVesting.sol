@@ -33,10 +33,16 @@ contract TokenVesting is Ownable, ReentrancyGuard {
         uint256 cliff,
         uint256 duration
     ) external onlyOwner {
+        require(account != address(0), "Invalid beneficiary address");
+        require(amount > 0, "Amount must be positive");
         require(
             cliff >= start && duration >= cliff,
             "TokenVesting: incorrect vesting timing"
         );
+
+        // Verify existing schedule isn't being overwritten
+        require(_vestingSchedules[account].amount == 0, "Schedule already exists");
+
         _vestingSchedules[account] = VestingSchedule(
             start,
             cliff,

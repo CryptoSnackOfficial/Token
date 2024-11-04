@@ -19,7 +19,6 @@ describe("Token Contract", function () {
         token = await Token.deploy(
             "Test Token",
             "TST",
-            18,
             1000000,
             5,
             3,
@@ -52,7 +51,6 @@ describe("Token Contract", function () {
         });
 
         it("Should fail if sender doesn't have enough tokens", async function () {
-            const initialOwnerBalance = await token.balanceOf(owner.address);
             await expect(
                 token.connect(addr1).transfer(owner.address, 1)
             ).to.be.revertedWithCustomError(token, "ERC20InsufficientBalance");
@@ -77,16 +75,16 @@ describe("Token Contract", function () {
 
     describe("Blacklist", function () {
         it("Should properly blacklist and unblacklist accounts", async function () {
-            await token.blacklist(addr1.address);
+            await token.setBlacklist(addr1.address, true);
             expect(await token.isBlacklisted(addr1.address)).to.be.true;
 
-            await token.unblacklist(addr1.address);
+            await token.setBlacklist(addr1.address, false);
             expect(await token.isBlacklisted(addr1.address)).to.be.false;
         });
 
         it("Should prevent transfers involving blacklisted accounts", async function () {
             await token.transfer(addr1.address, 100);
-            await token.blacklist(addr1.address);
+            await token.setBlacklist(addr1.address, true);
 
             await expect(
                 token.connect(addr1).transfer(addr2.address, 50)
@@ -97,6 +95,7 @@ describe("Token Contract", function () {
     describe("Tax System", function () {
         it("Should apply correct tax for non-whitelisted transfers", async function () {
             await token.setBurnRate(10); // 10% tax
+            await token.enableBurn(true);
             const transferAmount = 100;
             const expectedTax = 10; // 10% of 100
             const expectedReceived = 90;
