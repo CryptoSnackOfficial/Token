@@ -7,272 +7,199 @@ import "@openzeppelin/contracts/token/ERC20/extensions/ERC20Burnable.sol";
 import "@openzeppelin/contracts/token/ERC20/extensions/ERC20Pausable.sol";
 import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
-import "@openzeppelin/contracts/utils/structs/EnumerableSet.sol";
-import "./TokenVesting.sol";
 
 /**
- * @title Token
+ * @title CryptoSnackToken
  */
-contract Token is ERC20, ERC20Burnable, ERC20Pausable, Ownable, ReentrancyGuard {
+contract CryptoSnackToken is ERC20, ERC20Burnable, ERC20Pausable, Ownable, ReentrancyGuard {
     using SafeERC20 for IERC20;
-    using EnumerableSet for EnumerableSet.AddressSet;
 
-    uint256 private constant PRECISION_SCALE = 10000;  // 100.00%
-
-    // State variables
-    EnumerableSet.AddressSet private _blacklist;
-    EnumerableSet.AddressSet private _whitelist;
-    mapping(address => uint256) public _lockedUntil;
-    mapping(address => bool) private _frozenAccounts;
-
-    // Token parameters
-    uint256 private _sellingTax;
-    uint256 private _buyingTax;
-    uint256 private _burnRate;
-    bool private _burnEnabled;
-    address private _treasury;
-    TokenVesting private _vestingContract;
+    // Constants
+    uint256 private constant TAX_PRECISION = 10000; // used to set taxes with 2 decimals precision
+    uint256 private constant MAX_TAX = 2500; // 25.00%
 
     // Errors
-    // todo
+    error BlacklistedAccount(address account);
+    error InvalidTaxWallet();
+    error TaxTooHigh(uint256 tax);
+    error InvalidDexAddress();
+    error TransferFailed();
 
     // Events
-    event RecoveryExecuted(
-        address indexed compromisedAccount,
-        address indexed rightfulOwner,
-        uint256 recoveredAmount,
-        uint256 indexed executionTimestamp
-    );
+    event TokensMinted(address indexed to, uint256 amount);
+    event TaxWalletUpdated(address indexed oldWallet, address indexed newWallet);
+    event TaxesEnabled();
+    event TaxesDisabled();
+    event TaxesUpdated(uint16 buyTax, uint16 sellTax);
+    event DexStatusChanged(address indexed dex, bool status);
+    event BlacklistStatusChanged(address indexed account, bool status);
+    event WhitelistStatusChanged(address indexed account, bool status);
 
-    event TokensLocked(address indexed account, uint256 untilTimestamp);
-    event TokensUnlocked(address indexed account);
+    // State variables
+    mapping(address => bool) private _blacklist;
+    mapping(address => bool) private _whitelist;
+    mapping(address => bool) private _isDex;
 
-    /**
-     * @dev Constructor
-     */
+    // Token parameters
+    uint16 private _sellingTax; // up to 10000
+    uint16 private _buyingTax;  // up to 10000
+    bool private _taxEnabled;
+    address private _taxWallet;
+
     constructor(
         string memory name,
         string memory symbol,
         uint256 initialSupply,
-        uint256 sellingTax_,
-        uint256 buyingTax_,
+        uint16 sellingTax_,
+        uint16 buyingTax_,
         address initialOwner
     ) ERC20(name, symbol) Ownable(initialOwner) {
-        // initialOwner is checked for zero address in `Ownable`
+        if (sellingTax_ >= MAX_TAX) revert TaxTooHigh(sellingTax_);
+        if (buyingTax_ >= MAX_TAX) revert TaxTooHigh(buyingTax_);
 
         _mint(initialOwner, initialSupply * (10 ** uint256(decimals())));
         _sellingTax = sellingTax_;
         _buyingTax = buyingTax_;
-
-        _vestingContract = new TokenVesting(address(this), initialOwner);
+        _taxEnabled = sellingTax_ > 0 || buyingTax_ > 0;
     }
 
     // Basic operations
     function mint(address to, uint256 amount) public onlyOwner {
         _mint(to, amount);
-    }
-
-    function burn(uint256 amount) public override {
-        super.burn(amount);
-    }
-
-    function burnFrom(address account, uint256 amount) public virtual override {
-        require(account != address(0), "Cannot burn from zero address");
-        require(amount > 0, "Amount must be greater than zero");
-        require(balanceOf(account) >= amount, "Insufficient balance to burn");
-
-        uint256 currentAllowance = allowance(account, _msgSender());
-        require(currentAllowance >= amount, "Burn amount exceeds allowance");
-
-        // checked for overflow upper
-        unchecked {
-            _approve(account, _msgSender(), currentAllowance - amount);
-        }
-
-        super.burn(amount);
+        emit TokensMinted(to, amount);
     }
 
     // Pause functionality
     function pause() public onlyOwner {
-        _pause();
+        _pause(); // emits Paused
     }
 
     function unpause() public onlyOwner {
-        _unpause();
+        _unpause(); // emits Unpaused
     }
 
-    // todo: Tax management
-    function setSellingTax(uint256 sellingTax_) public onlyOwner {
+    // Tax + DEX management
+    function setSellingTax(uint16 sellingTax_) public onlyOwner {
+        if (sellingTax_ >= MAX_TAX) revert TaxTooHigh(sellingTax_);
         _sellingTax = sellingTax_;
+        emit TaxesUpdated(_buyingTax, sellingTax_);
     }
 
-    function setBuyingTax(uint256 buyingTax_) public onlyOwner {
+    function setBuyingTax(uint16 buyingTax_) public onlyOwner {
+        if (buyingTax_ >= MAX_TAX) revert TaxTooHigh(buyingTax_);
         _buyingTax = buyingTax_;
+        emit TaxesUpdated(buyingTax_, _sellingTax);
     }
 
-    // Lock management
-    function lock(address account, uint256 time) public onlyOwner {
-        require(account != address(0), "Cannot lock zero address");
-        require(time > 0, "Lock time must be positive");
-
-        uint256 unlockTime = block.timestamp + time;
-        require(unlockTime > block.timestamp, "Lock time overflow");
-
-        _lockedUntil[account] = unlockTime;
-        emit TokensLocked(account, unlockTime);
+    function setTaxEnabled(bool status) public onlyOwner {
+        _taxEnabled = status;
+        if (status) emit TaxesEnabled();
+        else emit TaxesDisabled();
     }
 
-    function unlock(address account) public onlyOwner {
-        require(account != address(0), "Cannot unlock zero address");
-        require(_lockedUntil[account] > 0, "Account not locked");
-
-        _lockedUntil[account] = 0;
-        emit TokensUnlocked(account);
+    function setDex(address dex, bool status) public onlyOwner {
+        if (dex == address(0)) revert InvalidDexAddress();
+        _isDex[dex] = status;
+        emit DexStatusChanged(dex, status);
     }
 
-    function isLocked(address account) public view returns (bool) {
-        return block.timestamp <= _lockedUntil[account];
-    }
-
-    // Distribution and reclaim
-    function distribute(
-        address[] memory recipients,
-        uint256[] memory values
-    ) public onlyOwner {
-        require(recipients.length == values.length, "ERC20: array lengths mismatch");
-
-        for (uint256 i = 0; i < recipients.length; i++) {
-            _mint(recipients[i], values[i]);
-        }
-    }
-
-    function reclaimToken(IERC20 other) public onlyOwner nonReentrant {
-        uint256 balance = other.balanceOf(address(this));
-        other.safeTransfer(owner(), balance);
-    }
-
-    // Treasury management
-    function setTreasury(address treasury_) public onlyOwner {
-        _treasury = treasury_;
-    }
-
-    // Burn management
-    function setBurnRate(uint256 burnRate_) public onlyOwner {
-        require(burnRate_ <= 100 * PRECISION_SCALE, "Token: burn rate cannot exceed 100%");
-
-        _burnRate = burnRate_;
-    }
-
-    function enableBurn(bool burnEnabled_) public onlyOwner {
-        _burnEnabled = burnEnabled_;
+    function setTaxWallet(address taxWallet) public onlyOwner {
+        if (taxWallet == address(0)) revert InvalidTaxWallet();
+        address oldWallet = _taxWallet;
+        _taxWallet = taxWallet;
+        emit TaxWalletUpdated(oldWallet, taxWallet);
     }
 
     // Whitelist management
     function setWhitelist(address account, bool status) public onlyOwner {
-        if (status) {
-            _whitelist.add(account);
-        } else {
-            _whitelist.remove(account);
-        }
+        _whitelist[account] = status;
+        emit WhitelistStatusChanged(account, status);
     }
 
     function isWhitelisted(address account) public view returns (bool) {
-        return _whitelist.contains(account);
+        return _whitelist[account];
     }
 
     // Blacklist management
     function setBlacklist(address account, bool status) public onlyOwner {
-        if (status) {
-            _blacklist.add(account);
-        } else {
-            _blacklist.remove(account);
-        }
+        _blacklist[account] = status;
+        emit BlacklistStatusChanged(account, status);
     }
 
     function isBlacklisted(address account) public view returns (bool) {
-        return _blacklist.contains(account);
+        return _blacklist[account];
     }
 
-    // Vesting functionality
-    function createVestingSchedule(
-        address account,
-        uint256 amount,
-        uint256 start,
-        uint256 cliff,
-        uint256 duration
-    ) external onlyOwner {
-        approve(address(_vestingContract), amount);
-        _vestingContract.setVestingSchedule(account, amount, start, cliff, duration);
+    // Views
+    function getBuyingTax() public view returns (uint256) {
+        return _buyingTax;
     }
 
-    function claimVestedTokens() external {
-        _vestingContract.claimVestedTokens(msg.sender);
+    function getSellingTax() public view returns (uint256) {
+        return _sellingTax;
     }
 
-    function vestingContract() public view returns (TokenVesting) {
-        return _vestingContract;
+    function isTaxEnabled() public view returns (bool) {
+        return _taxEnabled;
     }
 
-    // Batch transfer
-    function transferBatch(
-        address[] memory recipients,
-        uint256[] memory amounts
-    ) public {
-        require(recipients.length == amounts.length, "Array lengths do not match");
-        require(recipients.length > 0, "Empty arrays");
-
-        for (uint256 i = 0; i < recipients.length; i++) {
-            require(recipients[i] != address(0), "Invalid recipient");
-            require(amounts[i] > 0, "Invalid amount");
-            _transfer(msg.sender, recipients[i], amounts[i]);
-        }
+    function isDex(address account) public view returns (bool) {
+        return _isDex[account];
     }
 
-    // Recovery/freeze functionality
-    function freezeAccount(address target) external onlyOwner {
-        require(target != address(0), "Invalid address");
-        require(!_frozenAccounts[target], "Account already frozen");
-
-        _frozenAccounts[target] = true;
+    function getTaxWallet() public view returns (address) {
+        return _taxWallet;
     }
 
-    function executeRecovery(
-        address target,
-        address rightfulOwner
-    ) external onlyOwner {
-        require(target != address(0) && rightfulOwner != address(0), "Invalid address");
-        require(_frozenAccounts[target], "Account not frozen");
-
-        uint256 balance = balanceOf(target);
-        _transfer(target, rightfulOwner, balance);
-
-        _frozenAccounts[target] = false;
-
-        emit RecoveryExecuted(target, rightfulOwner, balance, block.timestamp);
+    // Utilities
+    function reclaimToken(IERC20 token) public onlyOwner {
+        uint256 balance = token.balanceOf(address(this));
+        token.safeTransfer(owner(), balance);
     }
 
-    function freezeAccount(address target, bool freeze) public onlyOwner {
-        require(target != address(0), "Invalid address");
-        require(!isBlacklisted(target), "ERC20: account is blacklisted");
-        require(!_frozenAccounts[target], "ERC20: account is already frozen");
-
-        _frozenAccounts[target] = freeze;
+    function reclaimBNB() public onlyOwner {
+        (bool success, ) = owner().call{value: address(this).balance}("");
+        if (!success) revert TransferFailed();
     }
 
     // Override functions
-    function transfer(
-        address recipient,
-        uint256 amount
-    ) public override returns (bool) {
-        if (!_burnEnabled || isWhitelisted(msg.sender) || isWhitelisted(recipient)) {
-            super.transfer(recipient, amount);
-        } else {
-            uint256 taxAmount = (amount * _burnRate * PRECISION_SCALE) / (100 * PRECISION_SCALE);
-            uint256 sendAmount = amount - taxAmount;
-            super.transfer(recipient, sendAmount);
-            super.transfer(_treasury, taxAmount);
-        }
+    function transfer(address to, uint256 value) public override returns (bool) {
+        address sender = _msgSender();
+        _transferWithTax(sender, to, value);
         return true;
+    }
+
+    function transferFrom(address from, address to, uint256 value) public override returns (bool) {
+        address spender = _msgSender();
+        _spendAllowance(from, spender, value); // would revert if insufficient balance
+        _transferWithTax(from, to, value);
+        return true;
+    }
+
+    function _calculateTax(uint256 amount, uint256 taxRate) internal pure returns (uint256) {
+        return (amount * taxRate) / TAX_PRECISION;
+    }
+
+    function _transferWithTax(address from, address to, uint256 value) internal {
+        if (_whitelist[from] || _whitelist[to] || !_taxEnabled) {
+            super._transfer(from, to, value);
+            return;
+        }
+
+        uint256 taxAmount = 0;
+        if (_isDex[from] && _buyingTax > 0) {
+            taxAmount = _calculateTax(value, _buyingTax);
+        } else if (_isDex[to] && _sellingTax > 0) {
+            taxAmount = _calculateTax(value , _sellingTax);
+        }
+
+        if (taxAmount > 0) {
+            if (_taxWallet == address(0)) revert InvalidTaxWallet();
+            super._transfer(from, _taxWallet, taxAmount);
+            super._transfer(from, to, value - taxAmount);
+        } else {
+            super._transfer(from, to, value);
+        }
     }
 
     function _update(
@@ -280,9 +207,12 @@ contract Token is ERC20, ERC20Burnable, ERC20Pausable, Ownable, ReentrancyGuard 
         address to,
         uint256 amount
     ) internal virtual override(ERC20, ERC20Pausable) {
-        require(!isBlacklisted(from) && !isBlacklisted(to), "ERC20: account is blacklisted");
-        require(!_frozenAccounts[from], "Token: account is frozen");
+        if (_blacklist[from]) revert BlacklistedAccount(from);
+        if (_blacklist[to]) revert BlacklistedAccount(to);
 
         super._update(from, to, amount);
     }
+
+    // To receive BNB
+    receive() external payable {}
 }

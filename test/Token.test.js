@@ -1,331 +1,361 @@
 const { expect } = require("chai");
 const { ethers } = require("hardhat");
 
-const ONE_DAY = 24 * 60 * 60; // seconds in a day
-
-describe("Token Contract", function () {
+describe("CryptoSnackToken", function () {
     let Token;
     let token;
     let owner;
     let addr1;
     let addr2;
-    let treasury;
-    let vestingContract;
+    let addr3;
+    let addrs;
+
+    const NAME = "CryptoSnack";
+    const SYMBOL = "SNACK";
+    const INITIAL_SUPPLY = 1000000;
+    const INITIAL_SELLING_TAX = 500; // 5%
+    const INITIAL_BUYING_TAX = 300;  // 3%
+    const MAX_TAX = 2500; // 25%
+    const TAX_PRECISION = 10000;
 
     beforeEach(async function () {
-        [owner, addr1, addr2, treasury] = await ethers.getSigners();
-
-        Token = await ethers.getContractFactory("Token");
+        [owner, addr1, addr2, addr3, ...addrs] = await ethers.getSigners();
+        Token = await ethers.getContractFactory("CryptoSnackToken");
         token = await Token.deploy(
-            "Test Token",
-            "TST",
-            1000000,
-            5,
-            3,
+            NAME,
+            SYMBOL,
+            INITIAL_SUPPLY,
+            INITIAL_SELLING_TAX,
+            INITIAL_BUYING_TAX,
             owner.address
         );
-
-        await token.setTreasury(treasury.address);
-        const vestingAddress = await token.vestingContract();
-        vestingContract = await ethers.getContractAt("TokenVesting", vestingAddress);
     });
 
     describe("Deployment", function () {
-        it("Should set the right owner", async function () {
-            expect(await token.owner()).to.equal(owner.address);
+        it("Should set the correct name and symbol", async function () {
+            expect(await token.name()).to.equal(NAME);
+            expect(await token.symbol()).to.equal(SYMBOL);
         });
 
-        it("Should assign the total supply of tokens to the owner", async function () {
-            const ownerBalance = await token.balanceOf(owner.address);
-            expect(await token.totalSupply()).to.equal(ownerBalance);
-        });
-    });
-
-    describe("Transactions", function () {
-        it("Should transfer tokens between accounts", async function () {
-            await token.transfer(addr1.address, 50);
-            expect(await token.balanceOf(addr1.address)).to.equal(50);
-
-            await token.connect(addr1).transfer(addr2.address, 50);
-            expect(await token.balanceOf(addr2.address)).to.equal(50);
+        it("Should mint initial supply to owner", async function () {
+            const decimals = await token.decimals();
+            const expectedSupply = BigInt(INITIAL_SUPPLY) * BigInt(BigInt(10) ** BigInt(decimals));
+            expect(await token.totalSupply()).to.equal(expectedSupply);
+            expect(await token.balanceOf(owner.address)).to.equal(expectedSupply);
         });
 
-        it("Should fail if sender doesn't have enough tokens", async function () {
-            await expect(
-                token.connect(addr1).transfer(owner.address, 1)
-            ).to.be.revertedWithCustomError(token, "ERC20InsufficientBalance");
+        it("Should set initial tax rates correctly", async function () {
+            expect(await token.getSellingTax()).to.equal(INITIAL_SELLING_TAX);
+            expect(await token.getBuyingTax()).to.equal(INITIAL_BUYING_TAX);
         });
 
-        it("Should fail if transferring to zero address", async function () {
-            await expect(
-                token.transfer(ethers.ZeroAddress, 50)
-            ).to.be.revertedWithCustomError(token, "ERC20InvalidReceiver");
+        it("Should enable taxes if initial rates are non-zero", async function () {
+            expect(await token.isTaxEnabled()).to.be.true;
         });
-    });
 
-    describe("Whitelist", function () {
-        it("Should properly whitelist and unwhitelist accounts", async function () {
-            await token.setWhitelist(addr1.address, true);
-            expect(await token.isWhitelisted(addr1.address)).to.be.true;
-
-            await token.setWhitelist(addr1.address, false);
-            expect(await token.isWhitelisted(addr1.address)).to.be.false;
+        it("Should reject deployment with tax rates exceeding MAX_TAX", async function () {
+            await expect(Token.deploy(
+                NAME,
+                SYMBOL,
+                INITIAL_SUPPLY,
+                MAX_TAX + 1,
+                INITIAL_BUYING_TAX,
+                owner.address
+            )).to.be.revertedWithCustomError(token, "TaxTooHigh");
         });
     });
 
-    describe("Blacklist", function () {
-        it("Should properly blacklist and unblacklist accounts", async function () {
-            await token.setBlacklist(addr1.address, true);
-            expect(await token.isBlacklisted(addr1.address)).to.be.true;
-
-            await token.setBlacklist(addr1.address, false);
-            expect(await token.isBlacklisted(addr1.address)).to.be.false;
+    describe("Minting", function () {
+        it("Should allow owner to mint new tokens", async function () {
+            const mintAmount = ethers.parseEther("1000");
+            await token.mint(addr1.address, mintAmount);
+            expect(await token.balanceOf(addr1.address)).to.equal(mintAmount);
         });
 
-        it("Should prevent transfers involving blacklisted accounts", async function () {
-            await token.transfer(addr1.address, 100);
-            await token.setBlacklist(addr1.address, true);
-
-            await expect(
-                token.connect(addr1).transfer(addr2.address, 50)
-            ).to.be.revertedWith("ERC20: account is blacklisted");
-        });
-    });
-
-    describe("Tax System", function () {
-        it("Should apply correct tax for non-whitelisted transfers", async function () {
-            await token.setBurnRate(10); // 10% tax
-            await token.enableBurn(true);
-            const transferAmount = 100;
-            const expectedTax = 10; // 10% of 100
-            const expectedReceived = 90;
-
-            await token.transfer(addr1.address, transferAmount);
-
-            expect(await token.balanceOf(addr1.address)).to.equal(expectedReceived);
-            expect(await token.balanceOf(treasury.address)).to.equal(expectedTax);
+        it("Should emit TokensMinted event", async function () {
+            const mintAmount = ethers.parseEther("1000");
+            await expect(token.mint(addr1.address, mintAmount))
+                .to.emit(token, "TokensMinted")
+                .withArgs(addr1.address, mintAmount);
         });
 
-        it("Should not apply tax for whitelisted addresses", async function () {
-            await token.setBurnRate(10); // 10% tax
-            await token.setWhitelist(addr1.address, true);
-            const transferAmount = 100;
-
-            await token.transfer(addr1.address, transferAmount);
-
-            expect(await token.balanceOf(addr1.address)).to.equal(transferAmount);
-        });
-    });
-
-    describe("Access Control", function () {
-        it("Should only allow owner to mint", async function () {
-            await expect(
-                token.connect(addr1).mint(addr1.address, 100)
-            ).to.be.revertedWithCustomError(token, "OwnableUnauthorizedAccount");
-        });
-
-        it("Should only allow owner to set tax", async function () {
-            await expect(
-                token.connect(addr1).setBurnRate(5)
-            ).to.be.revertedWithCustomError(token, "OwnableUnauthorizedAccount");
+        it("Should not allow non-owner to mint", async function () {
+            const mintAmount = ethers.parseEther("1000");
+            await expect(token.connect(addr1).mint(addr2.address, mintAmount))
+                .to.be.revertedWithCustomError(token, "OwnableUnauthorizedAccount");
         });
     });
 
     describe("Pause Functionality", function () {
-        it("Should pause and unpause", async function () {
+        it("Should allow owner to pause and unpause", async function () {
             await token.pause();
-            await expect(
-                token.transfer(addr1.address, 100)
-            ).to.be.revertedWithCustomError(token, "EnforcedPause");
+            expect(await token.paused()).to.be.true;
 
             await token.unpause();
-            await expect(
-                token.transfer(addr1.address, 100)
-            ).to.not.be.reverted;
+            expect(await token.paused()).to.be.false;
+        });
+
+        it("Should prevent transfers when paused", async function () {
+            await token.pause();
+            const amount = ethers.parseEther("100");
+            await expect(token.transfer(addr1.address, amount))
+                .to.be.revertedWithCustomError(token, "EnforcedPause");
+        });
+
+        it("Should not allow non-owner to pause/unpause", async function () {
+            await expect(token.connect(addr1).pause())
+                .to.be.revertedWithCustomError(token, "OwnableUnauthorizedAccount");
+            await expect(token.connect(addr1).unpause())
+                .to.be.revertedWithCustomError(token, "OwnableUnauthorizedAccount");
         });
     });
 
-    describe("Vesting", function () {
-        let currentTime;
-        let vestingAddress;
+    describe("Tax Management", function () {
+        it("Should allow owner to set selling tax", async function () {
+            const newTax = 1000; // 10%
+            await token.setSellingTax(newTax);
+            expect(await token.getSellingTax()).to.equal(newTax);
+        });
+
+        it("Should allow owner to set buying tax", async function () {
+            const newTax = 1000; // 10%
+            await token.setBuyingTax(newTax);
+            expect(await token.getBuyingTax()).to.equal(newTax);
+        });
+
+        it("Should reject tax rates above MAX_TAX", async function () {
+            await expect(token.setSellingTax(MAX_TAX + 1))
+                .to.be.revertedWithCustomError(token, "TaxTooHigh");
+            await expect(token.setBuyingTax(MAX_TAX + 1))
+                .to.be.revertedWithCustomError(token, "TaxTooHigh");
+        });
+
+        it("Should allow enabling/disabling taxes", async function () {
+            await token.setTaxEnabled(false);
+            expect(await token.isTaxEnabled()).to.be.false;
+
+            await token.setTaxEnabled(true);
+            expect(await token.isTaxEnabled()).to.be.true;
+        });
+
+        it("Should emit correct events when updating taxes", async function () {
+            const newTax = 1000;
+            await expect(token.setSellingTax(newTax))
+                .to.emit(token, "TaxesUpdated")
+                .withArgs(INITIAL_BUYING_TAX, newTax);
+        });
+    });
+
+    describe("DEX Management", function () {
+        it("Should allow setting DEX status", async function () {
+            await token.setDex(addr1.address, true);
+            expect(await token.isDex(addr1.address)).to.be.true;
+        });
+
+        it("Should reject zero address as DEX", async function () {
+            await expect(token.setDex(ethers.ZeroAddress, true))
+                .to.be.revertedWithCustomError(token, "InvalidDexAddress");
+        });
+
+        it("Should emit correct event when updating DEX status", async function () {
+            await expect(token.setDex(addr1.address, true))
+                .to.emit(token, "DexStatusChanged")
+                .withArgs(addr1.address, true);
+        });
+    });
+
+    describe("Whitelist/Blacklist Management", function () {
+        it("Should allow setting whitelist status", async function () {
+            await token.setWhitelist(addr1.address, true);
+            expect(await token.isWhitelisted(addr1.address)).to.be.true;
+        });
+
+        it("Should allow setting blacklist status", async function () {
+            await token.setBlacklist(addr1.address, true);
+            expect(await token.isBlacklisted(addr1.address)).to.be.true;
+        });
+
+        it("Should prevent transfers to/from blacklisted addresses", async function () {
+            await token.transfer(addr1.address, ethers.parseEther("100"));
+            await token.setBlacklist(addr1.address, true);
+
+            await expect(token.transfer(addr1.address, ethers.parseEther("10")))
+                .to.be.revertedWithCustomError(token, "BlacklistedAccount");
+
+            await expect(token.connect(addr1).transfer(addr2.address, ethers.parseEther("10")))
+                .to.be.revertedWithCustomError(token, "BlacklistedAccount");
+        });
+    });
+
+    describe("Tax Wallet Management", function () {
+        it("Should allow setting tax wallet", async function () {
+            await token.setTaxWallet(addr1.address);
+            expect(await token.getTaxWallet()).to.equal(addr1.address);
+        });
+
+        it("Should reject zero address as tax wallet", async function () {
+            await expect(token.setTaxWallet(ethers.ZeroAddress))
+                .to.be.revertedWithCustomError(token, "InvalidTaxWallet");
+        });
+
+        it("Should emit correct event when updating tax wallet", async function () {
+            await expect(token.setTaxWallet(addr1.address))
+                .to.emit(token, "TaxWalletUpdated")
+                .withArgs(ethers.ZeroAddress, addr1.address);
+        });
+    });
+
+    describe("Transfer Mechanics", function () {
+        let tokenWithoutTaxWallet;
 
         beforeEach(async function () {
-            currentTime = (await ethers.provider.getBlock('latest')).timestamp;
-            vestingAddress = await vestingContract.getAddress();
+            await token.setDex(addr2.address, true);
+            await token.setTaxWallet(addr3.address);
 
-            // Whitelist the vesting contract
-            await token.setWhitelist(vestingAddress, true);
-            // Approve vesting contract to spend tokens
-            await token.approve(vestingAddress, ethers.MaxUint256);
-        });
+            const initialAmount = ethers.parseEther("10000");
+            await token.transfer(addr1.address, initialAmount);
+            await token.transfer(addr2.address, initialAmount);
 
-        it("Should create vesting schedule correctly", async function () {
-            const amount = 1000;
-            const start = currentTime;
-            const cliff = currentTime + ONE_DAY * 30;
-            const duration = currentTime + ONE_DAY * 90;
-
-            // Transfer tokens to vesting contract first
-            await token.transfer(await vestingContract.getAddress(), amount);
-
-            await vestingContract.setVestingSchedule(
-                addr1.address,
-                amount,
-                start,
-                cliff,
-                duration
-            );
-
-            const schedule = await vestingContract.getVestingSchedule(addr1.address);
-            expect(schedule.amount).to.equal(amount);
-            expect(schedule.start).to.equal(start);
-            expect(schedule.cliff).to.equal(cliff);
-            expect(schedule.duration).to.equal(duration);
-            expect(schedule.claimed).to.equal(0);
-        });
-
-        it("Should not allow claiming before cliff", async function () {
-            const amount = 1000;
-            const start = currentTime;
-            const cliff = currentTime + ONE_DAY * 30;
-            const duration = currentTime + ONE_DAY * 90;
-
-            await token.transfer(await vestingContract.getAddress(), amount);
-            await vestingContract.setVestingSchedule(
-                addr1.address,
-                amount,
-                start,
-                cliff,
-                duration
-            );
-
-            await expect(
-                vestingContract.connect(addr1).claimVestedTokens(addr1.address)
-            ).to.be.revertedWith("TokenVesting: tokens are not yet vested");
-        });
-
-        it("Should vest tokens linearly after cliff", async function () {
-            const amount = 1000;
-            const start = currentTime;
-            const cliff = currentTime + ONE_DAY * 30;
-            const duration = currentTime + ONE_DAY * 90;
-
-            await token.transfer(await vestingContract.getAddress(), amount);
-            await vestingContract.setVestingSchedule(
-                addr1.address,
-                amount,
-                start,
-                cliff,
-                duration
-            );
-
-            // Move time to cliff + 30 days (2/3 of vesting period)
-            await ethers.provider.send("evm_increaseTime", [ONE_DAY * 60]); // 30 days cliff + 30 days
-            await ethers.provider.send("evm_mine");
-
-            await vestingContract.connect(addr1).claimVestedTokens(addr1.address);
-
-            const balance = await token.balanceOf(addr1.address);
-            expect(balance).to.be.closeTo(
-                ethers.toBigInt(Math.floor(amount * 2/3)),
-                ethers.toBigInt(10)
+            // Deploy separate token instance without tax wallet
+            tokenWithoutTaxWallet = await Token.deploy(
+                NAME,
+                SYMBOL,
+                INITIAL_SUPPLY,
+                INITIAL_SELLING_TAX,
+                INITIAL_BUYING_TAX,
+                owner.address
             );
         });
 
-        it("Should vest all tokens after duration", async function () {
-            const amount = 1000;
-            const start = currentTime;
-            const cliff = currentTime + ONE_DAY * 30;
-            const duration = currentTime + ONE_DAY * 90;
+        it("Should apply buying tax correctly", async function () {
+            const transferAmount = ethers.parseEther("100");
+            const initialBalance1 = await token.balanceOf(addr1.address);
+            const initialBalance3 = await token.balanceOf(addr3.address);
 
-            const vestingAddress = await vestingContract.getAddress();
+            await token.connect(addr2).transfer(addr1.address, transferAmount);
 
-            await token.transfer(vestingAddress, amount);
+            const taxAmount = (transferAmount * BigInt(INITIAL_BUYING_TAX)) / BigInt(TAX_PRECISION);
+            const finalBalance1 = await token.balanceOf(addr1.address);
+            const finalBalance3 = await token.balanceOf(addr3.address);
 
-            await vestingContract.setVestingSchedule(
-                addr1.address,
-                amount,
-                start,
-                cliff,
-                duration
-            );
+            expect(finalBalance3 - initialBalance3).to.equal(taxAmount);
+            expect(finalBalance1 - initialBalance1).to.equal(transferAmount - taxAmount);
+        });
 
-            await ethers.provider.send("evm_increaseTime", [ONE_DAY * 91]);
-            await ethers.provider.send("evm_mine");
+        it("Should apply selling tax correctly", async function () {
+            const transferAmount = ethers.parseEther("100");
+            const initialBalance2 = await token.balanceOf(addr2.address);
+            const initialBalance3 = await token.balanceOf(addr3.address);
 
-            await token.setWhitelist(vestingAddress, true);
+            await token.connect(addr1).transfer(addr2.address, transferAmount);
+
+            const taxAmount = (transferAmount * BigInt(INITIAL_SELLING_TAX)) / BigInt(TAX_PRECISION);
+            const finalBalance2 = await token.balanceOf(addr2.address);
+            const finalBalance3 = await token.balanceOf(addr3.address);
+
+            expect(finalBalance3 - initialBalance3).to.equal(taxAmount);
+            expect(finalBalance2 - initialBalance2).to.equal(transferAmount - taxAmount);
+        });
+
+        it("Should not apply tax for whitelisted addresses", async function () {
             await token.setWhitelist(addr1.address, true);
+            const transferAmount = ethers.parseEther("100");
 
-            await vestingContract.connect(addr1).claimVestedTokens(addr1.address);
+            const initialBalance2 = await token.balanceOf(addr2.address);
+            const initialBalance3 = await token.balanceOf(addr3.address);
 
+            await token.connect(addr1).transfer(addr2.address, transferAmount);
+
+            const finalBalance2 = await token.balanceOf(addr2.address);
+            const finalBalance3 = await token.balanceOf(addr3.address);
+
+            expect(finalBalance2 - initialBalance2).to.equal(transferAmount);
+            expect(finalBalance3).to.equal(initialBalance3);
+        });
+
+        it("Should not apply tax when taxes are disabled", async function () {
+            await token.setTaxEnabled(false);
+            const transferAmount = ethers.parseEther("100");
+
+            const initialBalance2 = await token.balanceOf(addr2.address);
+            const initialBalance3 = await token.balanceOf(addr3.address);
+
+            await token.connect(addr1).transfer(addr2.address, transferAmount);
+
+            const finalBalance2 = await token.balanceOf(addr2.address);
+            const finalBalance3 = await token.balanceOf(addr3.address);
+
+            expect(finalBalance2 - initialBalance2).to.equal(transferAmount);
+            expect(finalBalance3).to.equal(initialBalance3);
+        });
+
+        it("Should require tax wallet to be set for taxed transfers", async function () {
+            await tokenWithoutTaxWallet.setDex(addr2.address, true);
+            const transferAmount = ethers.parseEther("100");
+
+            // Transfer some tokens to addr1 first with taxes disabled
+            await tokenWithoutTaxWallet.setTaxEnabled(false);
+            await tokenWithoutTaxWallet.transfer(addr1.address, ethers.parseEther("1000"));
+
+            // Re-enable taxes and try transfer
+            await tokenWithoutTaxWallet.setTaxEnabled(true);
+            await expect(tokenWithoutTaxWallet.connect(addr1).transfer(addr2.address, transferAmount))
+                .to.be.revertedWithCustomError(tokenWithoutTaxWallet, "InvalidTaxWallet");
+        });
+
+        it("Should handle zero amount transfers correctly", async function () {
+            const transferAmount = BigInt(0);
+            await expect(token.connect(addr1).transfer(addr2.address, transferAmount))
+                .to.not.be.reverted;
+        });
+
+        it("Should handle maximum possible transfer amount", async function () {
             const balance = await token.balanceOf(addr1.address);
-            expect(balance).to.equal(amount);
+            await expect(token.connect(addr1).transfer(addr2.address, balance))
+                .to.not.be.reverted;
         });
 
-        it("Should not allow non-owners to create vesting schedules", async function () {
-            const amount = 1000;
-            const start = currentTime;
-            const cliff = currentTime + ONE_DAY * 30;
-            const duration = currentTime + ONE_DAY * 90;
+        it("Should fail on insufficient balance", async function () {
+            const balance = await token.balanceOf(addr1.address);
+            await expect(token.connect(addr1).transfer(addr2.address, balance + BigInt(1)))
+                .to.be.revertedWithCustomError(token, "ERC20InsufficientBalance");
+        });
+    });
 
-            await expect(
-                vestingContract.connect(addr1).setVestingSchedule(
-                    addr2.address,
-                    amount,
-                    start,
-                    cliff,
-                    duration
-                )
-            ).to.be.revertedWithCustomError(vestingContract, "OwnableUnauthorizedAccount");
+    describe("Token Recovery", function () {
+        it("Should allow owner to recover BNB", async function () {
+            const amount = ethers.parseEther("1");
+            await owner.sendTransaction({
+                to: token.target,
+                value: amount
+            });
+
+            const initialBalance = await ethers.provider.getBalance(owner.address);
+            await token.reclaimBNB();
+            const finalBalance = await ethers.provider.getBalance(owner.address);
+
+            expect(finalBalance).to.be.gt(initialBalance);
         });
 
-        it("Should not allow creating invalid vesting schedule", async function () {
-            const amount = 1000;
-            const start = currentTime;
-            const cliff = currentTime - ONE_DAY; // cliff before start
-            const duration = currentTime + ONE_DAY;
-
-            await expect(
-                vestingContract.setVestingSchedule(
-                    addr1.address,
-                    amount,
-                    start,
-                    cliff,
-                    duration
-                )
-            ).to.be.revertedWith("TokenVesting: incorrect vesting timing");
-        });
-
-        it("Should handle multiple claims correctly", async function () {
-            const amount = 1000;
-            const start = currentTime;
-            const cliff = currentTime + ONE_DAY * 30;
-            const duration = currentTime + ONE_DAY * 90;
-
-            await token.transfer(await vestingContract.getAddress(), amount);
-            await vestingContract.setVestingSchedule(
-                addr1.address,
-                amount,
-                start,
-                cliff,
-                duration
+        it("Should allow owner to recover ERC20 tokens", async function () {
+            // Deploy a test token and send some to the contract
+            const TestToken = await ethers.getContractFactory("CryptoSnackToken");
+            const testToken = await TestToken.deploy(
+                "Test",
+                "TEST",
+                1000000,
+                0,
+                0,
+                owner.address
             );
 
-            // Move to cliff + 15 days
-            await ethers.provider.send("evm_increaseTime", [ONE_DAY * 45]); // 30 days cliff + 15 days
-            await ethers.provider.send("evm_mine");
+            const amount = ethers.parseEther("100");
+            await testToken.transfer(token.target, amount);
 
-            await vestingContract.connect(addr1).claimVestedTokens(addr1.address);
-            const firstClaim = await token.balanceOf(addr1.address);
-
-            // Move another 15 days
-            await ethers.provider.send("evm_increaseTime", [ONE_DAY * 15]);
-            await ethers.provider.send("evm_mine");
-
-            await vestingContract.connect(addr1).claimVestedTokens(addr1.address);
-            const secondClaim = await token.balanceOf(addr1.address);
-
-            expect(secondClaim).to.be.gt(firstClaim);
+            await token.reclaimToken(testToken.target);
+            expect(await testToken.balanceOf(owner.address)).to.equal(
+                ethers.parseEther(INITIAL_SUPPLY.toString())
+            );
         });
     });
 });

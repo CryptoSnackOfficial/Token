@@ -2,77 +2,182 @@
 pragma solidity >=0.8.0 <0.9.0;
 
 import "@openzeppelin/contracts/access/Ownable.sol";
-import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
-import "hardhat/console.sol";
 
-
-contract TokenVesting is Ownable, ReentrancyGuard {
+contract CryptoSnackVesting is Ownable, ReentrancyGuard {
     using SafeERC20 for IERC20;
 
     struct VestingSchedule {
-        uint256 start;
+        uint256 totalAmount;
+        uint256 startTime;
         uint256 cliff;
         uint256 duration;
-        uint256 amount;
-        uint256 claimed;
+        uint256 releasedAmount;
+        bool revocable;
+        bool revoked;
     }
 
-    mapping(address => VestingSchedule) private _vestingSchedules;
-    IERC20 private immutable _token;
+    // Errors
+    error InvalidBeneficiary();
+    error NoVestingSchedule();
+    error VestingAlreadyExists();
+    error InvalidVestingParameters();
+    error InsufficientTokenBalance();
+    error NotRevocable();
+    error AlreadyRevoked();
+    error NothingToRelease();
+    error TransferFailed();
 
-    constructor(address token, address initialOwner) Ownable(initialOwner) {
-        _token = IERC20(token);
-    }
-
-    function setVestingSchedule(
-        address account,
+    // Events
+    event VestingScheduleCreated(
+        address indexed beneficiary,
         uint256 amount,
-        uint256 start,
+        uint256 startTime,
         uint256 cliff,
         uint256 duration
+    );
+    event TokensReleased(address indexed beneficiary, uint256 amount);
+    event TokensRefunded(uint256 amount);
+    event VestingRevoked(address indexed beneficiary);
+
+    // State variables
+    mapping(address => VestingSchedule) private _vestingSchedules;
+
+    // Token parameters
+    IERC20 private immutable _token;
+
+    constructor(address tokenAddress) Ownable(msg.sender) {
+        _token = IERC20(tokenAddress);
+    }
+
+    // Views
+    function getToken() public view returns (IERC20) {
+        return _token;
+    }
+
+    function getVestingSchedule(address beneficiary) external view returns (VestingSchedule memory) {
+        return _vestingSchedules[beneficiary];
+    }
+
+    // Vesting
+    function createVestingSchedule(
+        address beneficiary,
+        uint256 amount,
+        uint256 startTime,
+        uint256 cliffDuration,
+        uint256 vestingDuration,
+        bool revocable
     ) external onlyOwner {
-        require(account != address(0), "Invalid beneficiary address");
-        require(amount > 0, "Amount must be positive");
-        require(
-            cliff >= start && duration >= cliff,
-            "TokenVesting: incorrect vesting timing"
-        );
+        if (beneficiary == address(0)) revert InvalidBeneficiary();
+        if (amount == 0) revert InvalidVestingParameters();
+        if (startTime <= block.timestamp) revert InvalidVestingParameters();
+        if (cliffDuration == 0) revert InvalidVestingParameters();
+        if (vestingDuration == 0) revert InvalidVestingParameters();
+        if (cliffDuration > vestingDuration) revert InvalidVestingParameters();
+        if (_vestingSchedules[beneficiary].totalAmount != 0) revert VestingAlreadyExists();
+        if (_token.balanceOf(address(this)) < amount) revert InsufficientTokenBalance();
 
-        // Verify existing schedule isn't being overwritten
-        require(_vestingSchedules[account].amount == 0, "Schedule already exists");
+        uint256 cliff = startTime + cliffDuration;
 
-        _vestingSchedules[account] = VestingSchedule(
-            start,
-            cliff,
-            duration,
+        _vestingSchedules[beneficiary] = VestingSchedule({
+            totalAmount: amount,
+            startTime: startTime,
+            cliff: cliff,
+            duration: vestingDuration,
+            releasedAmount: 0,
+            revocable: revocable,
+            revoked: false
+        });
+
+        emit VestingScheduleCreated(
+            beneficiary,
             amount,
-            0
+            startTime,
+            cliff,
+            vestingDuration
         );
     }
 
-    function claimVestedTokens(address account) external nonReentrant {
-        uint256 currentTime = block.timestamp;
-        VestingSchedule storage schedule = _vestingSchedules[account];
+    function release() external nonReentrant {
+        address beneficiary = msg.sender;
+        VestingSchedule storage schedule = _vestingSchedules[beneficiary];
 
-        require(currentTime >= schedule.cliff, "TokenVesting: tokens are not yet vested");
+        if (schedule.totalAmount == 0) revert NoVestingSchedule();
+        if (schedule.revoked) revert AlreadyRevoked();
 
-        uint256 elapsedTime = currentTime - schedule.start;
-        uint256 totalVestingTime = schedule.duration - schedule.start;
+        uint256 releasable = _getReleasableAmount(beneficiary);
+        if (releasable == 0) revert NothingToRelease();
 
-        elapsedTime = elapsedTime > totalVestingTime ? totalVestingTime : elapsedTime;
+        schedule.releasedAmount += releasable;
+        emit TokensReleased(beneficiary, releasable);
 
-        uint256 tokensToClaim = ((schedule.amount * elapsedTime * 1e18) / totalVestingTime) / 1e18;
-        tokensToClaim = tokensToClaim - schedule.claimed;
-
-        require(tokensToClaim > 0, "TokenVesting: no tokens to claim");
-
-        schedule.claimed += tokensToClaim;
-        _token.safeTransfer(account, tokensToClaim);
+        _token.transfer(beneficiary, releasable);
     }
 
-    function getVestingSchedule(address account) external view returns (VestingSchedule memory) {
-        return _vestingSchedules[account];
+    /// @notice Would automatically transfer already released tokens to the beneficiary and then transfer the remaining tokens to the owner
+    function revoke(address beneficiary) external onlyOwner nonReentrant {
+        VestingSchedule storage schedule = _vestingSchedules[beneficiary];
+
+        if (schedule.totalAmount == 0) revert NoVestingSchedule();
+        if (!schedule.revocable) revert NotRevocable();
+        if (schedule.revoked) revert AlreadyRevoked();
+
+        uint256 releasable = _getReleasableAmount(beneficiary);
+        if (releasable > 0) {
+            schedule.releasedAmount += releasable;
+            _token.transfer(beneficiary, releasable);
+            emit TokensReleased(beneficiary, releasable);
+        }
+
+        uint256 remaining = schedule.totalAmount - schedule.releasedAmount;
+        if (remaining > 0) {
+            _token.transfer(owner(), remaining);
+            emit TokensRefunded(remaining);
+        }
+
+        schedule.revoked = true;
+        emit VestingRevoked(beneficiary);
     }
+
+    function _getReleasableAmount(address beneficiary) internal view returns (uint256) {
+        VestingSchedule memory schedule = _vestingSchedules[beneficiary];
+
+        if (block.timestamp < schedule.cliff) {
+            return 0;
+        }
+
+        if (schedule.revoked) {
+            return 0;
+        }
+
+        uint256 vestedAmount;
+        if (block.timestamp >= schedule.startTime + schedule.duration) {
+            vestedAmount = schedule.totalAmount;
+        } else {
+            vestedAmount = (schedule.totalAmount * (block.timestamp - schedule.startTime)) / schedule.duration;
+        }
+
+        return vestedAmount - schedule.releasedAmount;
+    }
+
+    function getVestedAmount(address beneficiary) external view returns (uint256) {
+        return _getReleasableAmount(beneficiary);
+    }
+
+    // Utilities
+    function reclaimToken(IERC20 token) public onlyOwner {
+        if (token == _token) revert TransferFailed();
+
+        uint256 balance = token.balanceOf(address(this));
+        token.safeTransfer(owner(), balance);
+    }
+
+    function reclaimBNB() public onlyOwner {
+        (bool success, ) = owner().call{value: address(this).balance}("");
+        if (!success) revert TransferFailed();
+    }
+
+    // To receive BNB
+    receive() external payable {}
 }
