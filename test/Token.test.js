@@ -8,6 +8,7 @@ describe("CryptoSnackToken", function () {
     let addr1;
     let addr2;
     let addr3;
+    let addr4;
     let addrs;
 
     const NAME = "CryptoSnack";
@@ -19,7 +20,7 @@ describe("CryptoSnackToken", function () {
     const TAX_PRECISION = 10000;
 
     beforeEach(async function () {
-        [owner, addr1, addr2, addr3, ...addrs] = await ethers.getSigners();
+        [owner, addr1, addr2, addr3, addr4, ...addrs] = await ethers.getSigners();
         Token = await ethers.getContractFactory("CryptoSnackToken");
         token = await Token.deploy(
             NAME,
@@ -622,6 +623,216 @@ describe("CryptoSnackToken", function () {
                     .to.emit(token, "TokensRecovered")
                     .withArgs(addr1.address, addr2.address, amount);
             });
+        });
+    });
+
+    describe("Edge Cases for Tax Calculations", function () {
+        beforeEach(async function () {
+            await token.setDex(addr2.address, true);
+            await token.setTaxWallet(addr3.address);
+            await token.transfer(addr1.address, ethers.parseEther("1000"));
+        });
+
+        it("Should handle transfers just above tax precision threshold", async function () {
+            const transferAmount = BigInt(TAX_PRECISION) + BigInt(1);
+            await token.connect(addr1).transfer(addr2.address, transferAmount);
+
+            const expectedTax = (transferAmount * BigInt(INITIAL_SELLING_TAX)) / BigInt(TAX_PRECISION);
+            expect(await token.balanceOf(addr3.address)).to.equal(expectedTax);
+        });
+
+        it("Should handle maximum allowed tax rates", async function () {
+            await token.setSellingTax(MAX_TAX);
+            await token.setBuyingTax(MAX_TAX);
+
+            const transferAmount = ethers.parseEther("100");
+            await token.connect(addr1).transfer(addr2.address, transferAmount);
+
+            const expectedTax = (transferAmount * BigInt(MAX_TAX)) / BigInt(TAX_PRECISION);
+            expect(await token.balanceOf(addr3.address)).to.equal(expectedTax);
+        });
+    });
+
+    describe("Advanced Tax Wallet Management", function () {
+        let MockTaxWallet;
+        let mockTaxWallet;
+
+        beforeEach(async function () {
+            // Deploy a mock contract to serve as tax wallet
+            MockTaxWallet = await ethers.getContractFactory("CryptoSnackToken");
+            mockTaxWallet = await MockTaxWallet.deploy(
+                "Mock",
+                "MOCK",
+                0,
+                0,
+                0,
+                owner.address
+            );
+
+            await token.setDex(addr2.address, true);
+            await token.transfer(addr1.address, ethers.parseEther("1000"));
+        });
+
+        it("Should handle multiple tax wallet changes", async function () {
+            const transferAmount = ethers.parseEther("100");
+
+            // First tax wallet
+            await token.setTaxWallet(addr3.address);
+            await token.connect(addr1).transfer(addr2.address, transferAmount);
+            const firstTaxBalance = await token.balanceOf(addr3.address);
+
+            // Second tax wallet
+            await token.setTaxWallet(addr4.address);
+            await token.connect(addr1).transfer(addr2.address, transferAmount);
+            const secondTaxBalance = await token.balanceOf(addr4.address);
+
+            expect(firstTaxBalance).to.be.gt(0);
+            expect(secondTaxBalance).to.be.gt(0);
+        });
+
+        it("Should handle contract address as tax wallet", async function () {
+            await token.setTaxWallet(mockTaxWallet.target);
+            const transferAmount = ethers.parseEther("100");
+
+            await token.connect(addr1).transfer(addr2.address, transferAmount);
+            const taxBalance = await token.balanceOf(mockTaxWallet.target);
+            expect(taxBalance).to.be.gt(0);
+        });
+    });
+
+    describe("Advanced Account Freezing and Recovery", function () {
+        beforeEach(async function () {
+            await token.transfer(addr1.address, ethers.parseEther("1000"));
+        });
+
+        it("Should prevent multiple freezes of the same account", async function () {
+            await token.freezeAccount(addr1.address);
+            await expect(token.freezeAccount(addr1.address))
+                .to.be.revertedWithCustomError(token, "AccountAlreadyFrozen");
+        });
+
+        it("Should allow re-freezing after freeze period expires", async function () {
+            await token.freezeAccount(addr1.address);
+            await ethers.provider.send("evm_increaseTime", [24 * 60 * 60 + 1]);
+            await ethers.provider.send("evm_mine");
+
+            await expect(token.freezeAccount(addr1.address)).to.not.be.reverted;
+        });
+
+        it("Should prevent token recovery from non-frozen accounts", async function () {
+            await expect(token.recoverStolenTokens(
+                addr1.address,
+                addr2.address,
+                ethers.parseEther("100")
+            )).to.be.revertedWithCustomError(token, "AccountNotFrozen");
+        });
+    });
+
+    describe("Advanced Multi-Transfer Tests", function () {
+        beforeEach(async function () {
+            await token.mint(owner.address, ethers.parseEther("1000000"));
+        });
+
+        it("Should handle zero addresses in recipients array", async function () {
+            const recipients = [addr1.address, ethers.ZeroAddress, addr2.address];
+            const amounts = [
+                ethers.parseEther("100"),
+                ethers.parseEther("100"),
+                ethers.parseEther("100")
+            ];
+
+            await expect(token.multiTransfer(recipients, amounts))
+                .to.be.reverted; // Should revert when trying to transfer to zero address
+        });
+
+        it("Should handle duplicate addresses in recipients array", async function () {
+            const recipients = [addr1.address, addr1.address, addr1.address];
+            const amount = ethers.parseEther("100");
+
+            await token.multiTransferEqual(recipients, amount);
+            expect(await token.balanceOf(addr1.address)).to.equal(amount * BigInt(3));
+        });
+    });
+
+    describe("Advanced Pausable Functionality", function () {
+        it("Should handle interleaved pauses and unpauses", async function () {
+            await token.pause();
+            await expect(token.transfer(addr1.address, 100)).to.be.reverted;
+
+            await token.unpause();
+            await expect(token.transfer(addr1.address, 100)).to.not.be.reverted;
+
+            await token.pause();
+            await expect(token.transfer(addr1.address, 100)).to.be.reverted;
+        });
+
+        it("Should allow non-transfer operations during pause", async function () {
+            await token.pause();
+
+            // These operations should still work during pause
+            await expect(token.setTaxWallet(addr1.address)).to.not.be.reverted;
+            await expect(token.setBuyingTax(1000)).to.not.be.reverted;
+            await expect(token.setDex(addr1.address, true)).to.not.be.reverted;
+        });
+    });
+
+    describe("Token Recovery Functions", function () {
+        let testToken;
+
+        beforeEach(async function () {
+            const TestToken = await ethers.getContractFactory("CryptoSnackToken");
+            testToken = await TestToken.deploy(
+                "Test",
+                "TEST",
+                1000,
+                0,
+                0,
+                owner.address
+            );
+        });
+
+        it("Should handle recovery of insufficient balance", async function () {
+            const amount = ethers.parseEther("100");
+            await testToken.transfer(token.target, amount);
+
+            // Try to recover more than available
+            await expect(token.reclaimToken(testToken.target))
+                .to.not.be.reverted;
+        });
+
+        it("Should prevent recovery of native token", async function () {
+            // Send some tokens to contract address directly
+            const amount = ethers.parseEther("100");
+            await token.transfer(token.target, amount);
+
+            // Attempt to recover own tokens
+            await expect(token.reclaimToken(token.target))
+                .to.not.be.reverted;
+        });
+    });
+
+    describe("Advanced Access Control", function () {
+        it("Should handle ownership transfer correctly", async function () {
+            await token.transferOwnership(addr1.address);
+
+            // Original owner should no longer have access
+            await expect(token.mint(addr2.address, 100))
+                .to.be.revertedWithCustomError(token, "OwnableUnauthorizedAccount");
+
+            // New owner should have access
+            await expect(token.connect(addr1).mint(addr2.address, 100))
+                .to.not.be.reverted;
+        });
+
+        it("Should prevent access to privileged functions after ownership transfer", async function () {
+            await token.transferOwnership(addr1.address);
+
+            await expect(token.setTaxWallet(addr2.address))
+                .to.be.revertedWithCustomError(token, "OwnableUnauthorizedAccount");
+            await expect(token.setBuyingTax(1000))
+                .to.be.revertedWithCustomError(token, "OwnableUnauthorizedAccount");
+            await expect(token.setDex(addr2.address, true))
+                .to.be.revertedWithCustomError(token, "OwnableUnauthorizedAccount");
         });
     });
 });

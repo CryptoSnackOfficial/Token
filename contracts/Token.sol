@@ -64,8 +64,8 @@ contract CryptoSnackToken is ERC20, ERC20Burnable, ERC20Pausable, Ownable, Reent
         uint16 buyingTax_,
         address initialOwner
     ) ERC20(name, symbol) Ownable(initialOwner) {
-        if (sellingTax_ >= MAX_TAX) revert TaxTooHigh(sellingTax_);
-        if (buyingTax_ >= MAX_TAX) revert TaxTooHigh(buyingTax_);
+        if (sellingTax_ > MAX_TAX) revert TaxTooHigh(sellingTax_);
+        if (buyingTax_ > MAX_TAX) revert TaxTooHigh(buyingTax_);
 
         _mint(initialOwner, initialSupply * (10 ** uint256(decimals())));
         _sellingTax = sellingTax_;
@@ -140,13 +140,13 @@ contract CryptoSnackToken is ERC20, ERC20Burnable, ERC20Pausable, Ownable, Reent
 
     // Tax + DEX management
     function setSellingTax(uint16 sellingTax_) public onlyOwner {
-        if (sellingTax_ >= MAX_TAX) revert TaxTooHigh(sellingTax_);
+        if (sellingTax_ > MAX_TAX) revert TaxTooHigh(sellingTax_);
         _sellingTax = sellingTax_;
         emit TaxesUpdated(_buyingTax, sellingTax_);
     }
 
     function setBuyingTax(uint16 buyingTax_) public onlyOwner {
-        if (buyingTax_ >= MAX_TAX) revert TaxTooHigh(buyingTax_);
+        if (buyingTax_ > MAX_TAX) revert TaxTooHigh(buyingTax_);
         _buyingTax = buyingTax_;
         emit TaxesUpdated(buyingTax_, _sellingTax);
     }
@@ -203,7 +203,7 @@ contract CryptoSnackToken is ERC20, ERC20Burnable, ERC20Pausable, Ownable, Reent
         address from,
         address to,
         uint256 amount
-    ) public onlyOwner {
+    ) public onlyOwner nonReentrant {
         if (_frozenUntil[from] <= block.timestamp) revert AccountNotFrozen();
 
         // Transfer tokens and reset freeze
