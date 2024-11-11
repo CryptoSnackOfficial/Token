@@ -358,4 +358,147 @@ describe("CryptoSnackToken", function () {
             );
         });
     });
+
+    describe("Multi-Transfer Functions", function () {
+        beforeEach(async function () {
+            // Transfer some tokens to owner for testing
+            const amount = ethers.parseEther("1000000");
+            await token.mint(owner.address, amount);
+        });
+
+        describe("multiTransfer", function () {
+            it("Should transfer different amounts to multiple recipients", async function () {
+                const recipients = [addr1.address, addr2.address, addr3.address];
+                const amounts = [
+                    ethers.parseEther("100"),
+                    ethers.parseEther("200"),
+                    ethers.parseEther("300")
+                ];
+
+                await token.multiTransfer(recipients, amounts);
+
+                expect(await token.balanceOf(addr1.address)).to.equal(amounts[0]);
+                expect(await token.balanceOf(addr2.address)).to.equal(amounts[1]);
+                expect(await token.balanceOf(addr3.address)).to.equal(amounts[2]);
+            });
+
+            it("Should revert if arrays length mismatch", async function () {
+                const recipients = [addr1.address, addr2.address];
+                const amounts = [ethers.parseEther("100")];
+
+                await expect(token.multiTransfer(recipients, amounts))
+                    .to.be.revertedWithCustomError(token, "ArraysLengthMismatch");
+            });
+
+            it("Should revert if batch size exceeds maximum", async function () {
+                const recipients = Array(201).fill(addr1.address);
+                const amounts = Array(201).fill(ethers.parseEther("1"));
+
+                await expect(token.multiTransfer(recipients, amounts))
+                    .to.be.revertedWithCustomError(token, "InvalidBatchLength");
+            });
+
+            it("Should revert if empty arrays provided", async function () {
+                await expect(token.multiTransfer([], []))
+                    .to.be.revertedWithCustomError(token, "InvalidBatchLength");
+            });
+        });
+
+        describe("multiTransferEqual", function () {
+            it("Should transfer equal amounts to multiple recipients", async function () {
+                const recipients = [addr1.address, addr2.address, addr3.address];
+                const amount = ethers.parseEther("100");
+
+                await token.multiTransferEqual(recipients, amount);
+
+                for (const recipient of recipients) {
+                    expect(await token.balanceOf(recipient)).to.equal(amount);
+                }
+            });
+
+            it("Should revert if batch size exceeds maximum", async function () {
+                const recipients = Array(201).fill(addr1.address);
+                const amount = ethers.parseEther("1");
+
+                await expect(token.multiTransferEqual(recipients, amount))
+                    .to.be.revertedWithCustomError(token, "InvalidBatchLength");
+            });
+
+            it("Should revert if insufficient balance", async function () {
+                const recipients = [addr1.address, addr2.address];
+                const amount = ethers.parseEther("1000000000"); // More than total supply
+
+                await expect(token.multiTransferEqual(recipients, amount))
+                    .to.be.revertedWithCustomError(token, "TransferFailed");
+            });
+        });
+    });
+
+    describe("Account Freezing", function () {
+        beforeEach(async function () {
+            await token.transfer(addr1.address, ethers.parseEther("1000"));
+        });
+
+        it("Should allow owner to freeze account", async function () {
+            await token.freezeAccount(addr1.address);
+            expect(await token.isFrozen(addr1.address)).to.be.true;
+        });
+
+        it("Should prevent transfers from frozen account", async function () {
+            await token.freezeAccount(addr1.address);
+            await expect(token.connect(addr1).transfer(addr2.address, ethers.parseEther("100")))
+                .to.be.revertedWithCustomError(token, "FrozenAccount");
+        });
+
+        it("Should prevent transfers to frozen account", async function () {
+            await token.freezeAccount(addr2.address);
+            await expect(token.connect(addr1).transfer(addr2.address, ethers.parseEther("100")))
+                .to.be.revertedWithCustomError(token, "FrozenAccount");
+        });
+
+        it("Should return correct freeze time", async function () {
+            await token.freezeAccount(addr1.address);
+            const freezeTime = await token.getFreezeTime(addr1.address);
+            expect(freezeTime).to.be.gt(Math.floor(Date.now() / 1000));
+        });
+
+        it("Should not allow freezing already frozen account", async function () {
+            await token.freezeAccount(addr1.address);
+            await expect(token.freezeAccount(addr1.address))
+                .to.be.revertedWithCustomError(token, "AccountAlreadyFrozen");
+        });
+
+        describe("Token Recovery", function () {
+            it("Should allow recovering tokens from frozen account", async function () {
+                const amount = ethers.parseEther("100");
+                await token.freezeAccount(addr1.address);
+
+                await token.recoverStolenTokens(
+                    addr1.address,
+                    addr2.address,
+                    amount
+                );
+
+                expect(await token.balanceOf(addr2.address)).to.equal(amount);
+                expect(await token.isFrozen(addr1.address)).to.be.false;
+            });
+
+            it("Should revert if trying to recover from non-frozen account", async function () {
+                await expect(token.recoverStolenTokens(
+                    addr1.address,
+                    addr2.address,
+                    ethers.parseEther("100")
+                )).to.be.revertedWithCustomError(token, "AccountNotFrozen");
+            });
+
+            it("Should emit TokensRecovered event", async function () {
+                const amount = ethers.parseEther("100");
+                await token.freezeAccount(addr1.address);
+
+                await expect(token.recoverStolenTokens(addr1.address, addr2.address, amount))
+                    .to.emit(token, "TokensRecovered")
+                    .withArgs(addr1.address, addr2.address, amount);
+            });
+        });
+    });
 });

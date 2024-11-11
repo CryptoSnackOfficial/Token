@@ -18,12 +18,19 @@ contract CryptoSnackToken is ERC20, ERC20Burnable, ERC20Pausable, Ownable, Reent
     uint256 private constant TAX_PRECISION = 10000; // used to set taxes with 2 decimals precision
     uint256 private constant MAX_TAX = 2500; // 25.00%
 
+    uint256 private constant MAX_BATCH_SIZE = 200; // for multi-transfers
+
     // Errors
+    error ArraysLengthMismatch();
+    error InvalidBatchLength();
     error BlacklistedAccount(address account);
     error InvalidTaxWallet();
     error TaxTooHigh(uint256 tax);
     error InvalidDexAddress();
     error TransferFailed();
+    error AccountNotFrozen();
+    error AccountAlreadyFrozen();
+    error FrozenAccount(address account);
 
     // Events
     event TokensMinted(address indexed to, uint256 amount);
@@ -34,11 +41,14 @@ contract CryptoSnackToken is ERC20, ERC20Burnable, ERC20Pausable, Ownable, Reent
     event DexStatusChanged(address indexed dex, bool status);
     event BlacklistStatusChanged(address indexed account, bool status);
     event WhitelistStatusChanged(address indexed account, bool status);
+    event AccountFrozen(address indexed account, uint256 until);
+    event TokensRecovered(address indexed from, address indexed to, uint256 amount);
 
     // State variables
     mapping(address => bool) private _blacklist;
     mapping(address => bool) private _whitelist;
     mapping(address => bool) private _isDex;
+    mapping(address => uint256) private _frozenUntil;
 
     // Token parameters
     uint16 private _sellingTax; // up to 10000
@@ -67,6 +77,56 @@ contract CryptoSnackToken is ERC20, ERC20Burnable, ERC20Pausable, Ownable, Reent
     function mint(address to, uint256 amount) public onlyOwner {
         _mint(to, amount);
         emit TokensMinted(to, amount);
+    }
+
+    // burn methods are implemented in ERC20Burnable
+
+    // Views
+    function getBuyingTax() public view returns (uint256) {
+        return _buyingTax;
+    }
+
+    function getSellingTax() public view returns (uint256) {
+        return _sellingTax;
+    }
+
+    function isTaxEnabled() public view returns (bool) {
+        return _taxEnabled;
+    }
+
+    function isDex(address account) public view returns (bool) {
+        return _isDex[account];
+    }
+
+    function getTaxWallet() public view returns (address) {
+        return _taxWallet;
+    }
+
+    // Mass distribution (e.g. for airdrops)
+    function multiTransfer(
+        address[] calldata recipients,
+        uint256[] calldata amounts
+    ) public onlyOwner nonReentrant whenNotPaused {
+        if (recipients.length != amounts.length) revert ArraysLengthMismatch();
+        if (recipients.length > MAX_BATCH_SIZE) revert InvalidBatchLength();
+        if (recipients.length == 0) revert InvalidBatchLength();
+
+        for (uint256 i = 0; i < recipients.length; i++) {
+            transfer(recipients[i], amounts[i]);
+        }
+    }
+
+    function multiTransferEqual(
+        address[] calldata recipients,
+        uint256 amount
+    ) public onlyOwner nonReentrant whenNotPaused {
+        if (recipients.length > MAX_BATCH_SIZE) revert InvalidBatchLength();
+        if (recipients.length == 0) revert InvalidBatchLength();
+        if (balanceOf(owner()) < amount * recipients.length) revert TransferFailed();
+
+        for (uint256 i = 0; i < recipients.length; i++) {
+            transfer(recipients[i], amount);
+        }
     }
 
     // Pause functionality
@@ -130,36 +190,35 @@ contract CryptoSnackToken is ERC20, ERC20Burnable, ERC20Pausable, Ownable, Reent
         return _blacklist[account];
     }
 
-    // Views
-    function getBuyingTax() public view returns (uint256) {
-        return _buyingTax;
+    // Token recovery
+    function freezeAccount(address account) public onlyOwner {
+        if (_frozenUntil[account] > block.timestamp) revert AccountAlreadyFrozen();
+
+        uint256 freezeTime = block.timestamp + 24 hours;
+        _frozenUntil[account] = freezeTime;
+        emit AccountFrozen(account, freezeTime);
     }
 
-    function getSellingTax() public view returns (uint256) {
-        return _sellingTax;
+    function recoverStolenTokens(
+        address from,
+        address to,
+        uint256 amount
+    ) public onlyOwner {
+        if (_frozenUntil[from] <= block.timestamp) revert AccountNotFrozen();
+
+        // Transfer tokens and reset freeze
+        _transfer(from, to, amount);
+        _frozenUntil[from] = 0;
+
+        emit TokensRecovered(from, to, amount);
     }
 
-    function isTaxEnabled() public view returns (bool) {
-        return _taxEnabled;
+    function isFrozen(address account) public view returns (bool) {
+        return _frozenUntil[account] > block.timestamp;
     }
 
-    function isDex(address account) public view returns (bool) {
-        return _isDex[account];
-    }
-
-    function getTaxWallet() public view returns (address) {
-        return _taxWallet;
-    }
-
-    // Utilities
-    function reclaimToken(IERC20 token) public onlyOwner {
-        uint256 balance = token.balanceOf(address(this));
-        token.safeTransfer(owner(), balance);
-    }
-
-    function reclaimBNB() public onlyOwner {
-        (bool success, ) = owner().call{value: address(this).balance}("");
-        if (!success) revert TransferFailed();
+    function getFreezeTime(address account) public view returns (uint256) {
+        return _frozenUntil[account];
     }
 
     // Override functions
@@ -190,7 +249,7 @@ contract CryptoSnackToken is ERC20, ERC20Burnable, ERC20Pausable, Ownable, Reent
         if (_isDex[from] && _buyingTax > 0) {
             taxAmount = _calculateTax(value, _buyingTax);
         } else if (_isDex[to] && _sellingTax > 0) {
-            taxAmount = _calculateTax(value , _sellingTax);
+            taxAmount = _calculateTax(value, _sellingTax);
         }
 
         if (taxAmount > 0) {
@@ -210,7 +269,24 @@ contract CryptoSnackToken is ERC20, ERC20Burnable, ERC20Pausable, Ownable, Reent
         if (_blacklist[from]) revert BlacklistedAccount(from);
         if (_blacklist[to]) revert BlacklistedAccount(to);
 
+        // bypass check for tokens recovery
+        if (_msgSender() != owner()) {
+            if (from != address(0) && _frozenUntil[from] > block.timestamp) revert FrozenAccount(from);
+            if (to != address(0) && _frozenUntil[to] > block.timestamp) revert FrozenAccount(to);
+        }
+
         super._update(from, to, amount);
+    }
+
+    // Utilities
+    function reclaimToken(IERC20 token) public onlyOwner {
+        uint256 balance = token.balanceOf(address(this));
+        token.safeTransfer(owner(), balance);
+    }
+
+    function reclaimBNB() public onlyOwner {
+        (bool success, ) = owner().call{value: address(this).balance}("");
+        if (!success) revert TransferFailed();
     }
 
     // To receive BNB

@@ -115,7 +115,7 @@ contract CryptoSnackVesting is Ownable, ReentrancyGuard {
         _token.transfer(beneficiary, releasable);
     }
 
-    /// @notice Would automatically transfer already released tokens to the beneficiary and then transfer the remaining tokens to the owner
+    /// @notice Would automatically transfer releasable tokens to the beneficiary and then transfer the remaining tokens to the owner
     function revoke(address beneficiary) external onlyOwner nonReentrant {
         VestingSchedule storage schedule = _vestingSchedules[beneficiary];
 
