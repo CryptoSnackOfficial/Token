@@ -1,5 +1,5 @@
-const { expect } = require("chai");
-const { ethers } = require("hardhat");
+const {expect} = require("chai");
+const {ethers} = require("hardhat");
 
 describe("CryptoSnackToken", function () {
     let Token;
@@ -144,6 +144,14 @@ describe("CryptoSnackToken", function () {
                 .to.emit(token, "TaxesUpdated")
                 .withArgs(INITIAL_BUYING_TAX, newTax);
         });
+
+        it("Should handle setting zero tax rates", async function () {
+            await token.setSellingTax(0);
+            await token.setBuyingTax(0);
+
+            expect(await token.getSellingTax()).to.equal(0);
+            expect(await token.getBuyingTax()).to.equal(0);
+        });
     });
 
     describe("DEX Management", function () {
@@ -161,6 +169,45 @@ describe("CryptoSnackToken", function () {
             await expect(token.setDex(addr1.address, true))
                 .to.emit(token, "DexStatusChanged")
                 .withArgs(addr1.address, true);
+        });
+
+        it("Should handle DEX status changes correctly", async function () {
+            // First transfer some tokens to addr1
+            const initialAmount = ethers.parseEther("1000");
+            await token.transfer(addr1.address, initialAmount);
+
+            await token.setDex(addr1.address, true);
+            expect(await token.isDex(addr1.address)).to.be.true;
+
+            await token.setDex(addr1.address, false);
+            expect(await token.isDex(addr1.address)).to.be.false;
+
+            // Should now transfer without DEX tax
+            const transferAmount = ethers.parseEther("100");
+            const initialBalance = await token.balanceOf(addr2.address);
+            await token.connect(addr1).transfer(addr2.address, transferAmount);
+            expect(await token.balanceOf(addr2.address)).to.equal(initialBalance + transferAmount);
+        });
+
+        it("Should handle tax calculation with multiple DEX addresses", async function () {
+            // First transfer some tokens to addr1 and addr2
+            await token.transfer(addr1.address, ethers.parseEther("1000"));
+            await token.transfer(addr2.address, ethers.parseEther("1000"));
+
+            await token.setTaxWallet(addr3.address);
+            await token.setDex(addr1.address, true);
+            await token.setDex(addr2.address, true);
+
+            const transferAmount = ethers.parseEther("100");
+            const initialBalance3 = await token.balanceOf(addr3.address);
+
+            // Transfer between two DEX addresses
+            await token.connect(addr1).transfer(addr2.address, transferAmount);
+
+            // When transferring from a DEX address, it uses buying tax (3%) not selling tax
+            const taxAmount = (transferAmount * BigInt(INITIAL_BUYING_TAX)) / BigInt(TAX_PRECISION);
+            const finalBalance3 = await token.balanceOf(addr3.address);
+            expect(finalBalance3 - initialBalance3).to.equal(taxAmount);
         });
     });
 
@@ -184,6 +231,31 @@ describe("CryptoSnackToken", function () {
 
             await expect(token.connect(addr1).transfer(addr2.address, ethers.parseEther("10")))
                 .to.be.revertedWithCustomError(token, "BlacklistedAccount");
+        });
+
+        it("Should handle address being both whitelisted and blacklisted", async function () {
+            await token.setWhitelist(addr1.address, true);
+            await token.setBlacklist(addr1.address, true);
+
+            // Blacklist should take precedence
+            await expect(token.connect(addr1).transfer(addr2.address, ethers.parseEther("1")))
+                .to.be.revertedWithCustomError(token, "BlacklistedAccount");
+        });
+
+        it("Should handle rapid whitelist/blacklist toggles", async function () {
+            // First transfer some tokens to addr1
+            await token.transfer(addr1.address, ethers.parseEther("10"));
+
+            // Test rapid status changes
+            await token.setWhitelist(addr1.address, true);
+            await token.setBlacklist(addr1.address, true);
+            await token.setBlacklist(addr1.address, false);
+            await token.setWhitelist(addr1.address, false);
+
+            // Verify final state allows transfers
+            const amount = ethers.parseEther("1");
+            await expect(token.connect(addr1).transfer(addr2.address, amount))
+                .to.not.be.reverted;
         });
     });
 
@@ -320,6 +392,32 @@ describe("CryptoSnackToken", function () {
             await expect(token.connect(addr1).transfer(addr2.address, balance + BigInt(1)))
                 .to.be.revertedWithCustomError(token, "ERC20InsufficientBalance");
         });
+
+        it("Should handle transfers with tax amount rounding to zero", async function () {
+            // Set a very small tax that would round to zero for small amounts
+            await token.setBuyingTax(1); // 0.01%
+            const smallAmount = BigInt(1);
+
+            const initialBalance = await token.balanceOf(addr1.address);
+            await token.connect(addr2).transfer(addr1.address, smallAmount);
+
+            // Tax should effectively be 0 due to integer division
+            expect(await token.balanceOf(addr1.address)).to.equal(initialBalance + smallAmount);
+        });
+
+        it("Should handle transfer amount equal to tax precision base", async function () {
+            const transferAmount = BigInt(TAX_PRECISION);
+            await token.transfer(addr2.address, transferAmount);
+
+            const initialBalance1 = await token.balanceOf(addr1.address);
+            await token.connect(addr2).transfer(addr1.address, transferAmount);
+
+            const taxAmount = (transferAmount * BigInt(INITIAL_BUYING_TAX)) / BigInt(TAX_PRECISION);
+            const expectedReceived = transferAmount - taxAmount;
+
+            const finalBalance1 = await token.balanceOf(addr1.address);
+            expect(finalBalance1 - initialBalance1).to.equal(expectedReceived);
+        });
     });
 
     describe("Token Recovery", function () {
@@ -361,7 +459,6 @@ describe("CryptoSnackToken", function () {
 
     describe("Multi-Transfer Functions", function () {
         beforeEach(async function () {
-            // Transfer some tokens to owner for testing
             const amount = ethers.parseEther("1000000");
             await token.mint(owner.address, amount);
         });
@@ -466,6 +563,32 @@ describe("CryptoSnackToken", function () {
             await token.freezeAccount(addr1.address);
             await expect(token.freezeAccount(addr1.address))
                 .to.be.revertedWithCustomError(token, "AccountAlreadyFrozen");
+        });
+
+        it("Should correctly unfreeze account after 24 hours", async function () {
+            await token.freezeAccount(addr1.address);
+
+            await ethers.provider.send("evm_increaseTime", [24 * 60 * 60 + 1]);
+            await ethers.provider.send("evm_mine");
+
+            expect(await token.isFrozen(addr1.address)).to.be.false;
+
+            await expect(token.connect(addr1).transfer(addr2.address, ethers.parseEther("1")))
+                .to.not.be.reverted;
+        });
+
+        it("Should handle multiple freeze/unfreeze cycles", async function () {
+            await token.freezeAccount(addr1.address);
+            await ethers.provider.send("evm_increaseTime", [24 * 60 * 60 + 1]);
+            await ethers.provider.send("evm_mine");
+
+            await token.freezeAccount(addr1.address);
+            await ethers.provider.send("evm_increaseTime", [24 * 60 * 60 + 1]);
+            await ethers.provider.send("evm_mine");
+
+            const amount = ethers.parseEther("1");
+            await expect(token.connect(addr1).transfer(addr2.address, amount))
+                .to.not.be.reverted;
         });
 
         describe("Token Recovery", function () {
