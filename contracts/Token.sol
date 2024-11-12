@@ -15,10 +15,10 @@ contract CryptoSnackToken is ERC20, ERC20Burnable, ERC20Pausable, Ownable, Reent
     using SafeERC20 for IERC20;
 
     // Constants
-    uint256 private constant TAX_PRECISION = 10000; // used to set taxes with 2 decimals precision
-    uint256 private constant MAX_TAX = 2500; // 25.00%
+    uint16 private constant TAX_PRECISION = 10000; // used to set taxes with 2 decimals precision
+    uint16 private constant MAX_TAX = 2500; // 25.00%
 
-    uint256 private constant MAX_BATCH_SIZE = 200; // for multi-transfers
+    uint8 private constant MAX_BATCH_SIZE = 200; // for multi-transfers
 
     // Errors
     error ArraysLengthMismatch();
@@ -82,23 +82,23 @@ contract CryptoSnackToken is ERC20, ERC20Burnable, ERC20Pausable, Ownable, Reent
     // burn methods are implemented in ERC20Burnable
 
     // Views
-    function getBuyingTax() public view returns (uint256) {
+    function getBuyingTax() external view returns (uint256) {
         return _buyingTax;
     }
 
-    function getSellingTax() public view returns (uint256) {
+    function getSellingTax() external view returns (uint256) {
         return _sellingTax;
     }
 
-    function isTaxEnabled() public view returns (bool) {
+    function isTaxEnabled() external view returns (bool) {
         return _taxEnabled;
     }
 
-    function isDex(address account) public view returns (bool) {
+    function isDex(address account) external view returns (bool) {
         return _isDex[account];
     }
 
-    function getTaxWallet() public view returns (address) {
+    function getTaxWallet() external view returns (address) {
         return _taxWallet;
     }
 
@@ -106,64 +106,79 @@ contract CryptoSnackToken is ERC20, ERC20Burnable, ERC20Pausable, Ownable, Reent
     function multiTransfer(
         address[] calldata recipients,
         uint256[] calldata amounts
-    ) public onlyOwner nonReentrant whenNotPaused {
-        if (recipients.length != amounts.length) revert ArraysLengthMismatch();
-        if (recipients.length > MAX_BATCH_SIZE) revert InvalidBatchLength();
-        if (recipients.length == 0) revert InvalidBatchLength();
+    ) external onlyOwner nonReentrant whenNotPaused {
+        uint256 length = recipients.length;
+        if (length != amounts.length) revert ArraysLengthMismatch();
+        if (length == 0 || length > MAX_BATCH_SIZE) revert InvalidBatchLength();
 
-        for (uint256 i = 0; i < recipients.length; i++) {
-            transfer(recipients[i], amounts[i]);
+        address sender = _msgSender();
+        uint256 totalAmount;
+
+        for (uint256 i = 0; i < length;) {
+            totalAmount += amounts[i];
+            unchecked { ++i; }
+        }
+
+        if (balanceOf(sender) < totalAmount) revert TransferFailed();
+
+        for (uint256 i = 0; i < length;) {
+            _transfer(sender, recipients[i], amounts[i]);
+            unchecked { ++i; }
         }
     }
 
     function multiTransferEqual(
         address[] calldata recipients,
         uint256 amount
-    ) public onlyOwner nonReentrant whenNotPaused {
-        if (recipients.length > MAX_BATCH_SIZE) revert InvalidBatchLength();
-        if (recipients.length == 0) revert InvalidBatchLength();
-        if (balanceOf(owner()) < amount * recipients.length) revert TransferFailed();
+    ) external onlyOwner nonReentrant whenNotPaused {
+        uint256 length = recipients.length;
+        if (length == 0 || length > MAX_BATCH_SIZE) revert InvalidBatchLength();
 
-        for (uint256 i = 0; i < recipients.length; i++) {
-            transfer(recipients[i], amount);
+        address sender = _msgSender();
+        uint256 totalAmount = amount * length;
+        if (balanceOf(sender) < totalAmount) revert TransferFailed();
+
+        for (uint256 i = 0; i < length;) {
+            _transfer(sender, recipients[i], amount);
+            unchecked { ++i; }
         }
     }
 
     // Pause functionality
-    function pause() public onlyOwner {
+    function pause() external onlyOwner {
         _pause(); // emits Paused
     }
 
-    function unpause() public onlyOwner {
+    function unpause() external onlyOwner {
         _unpause(); // emits Unpaused
     }
 
     // Tax + DEX management
-    function setSellingTax(uint16 sellingTax_) public onlyOwner {
+    function setSellingTax(uint16 sellingTax_) external onlyOwner {
         if (sellingTax_ > MAX_TAX) revert TaxTooHigh(sellingTax_);
         _sellingTax = sellingTax_;
         emit TaxesUpdated(_buyingTax, sellingTax_);
     }
 
-    function setBuyingTax(uint16 buyingTax_) public onlyOwner {
+    function setBuyingTax(uint16 buyingTax_) external onlyOwner {
         if (buyingTax_ > MAX_TAX) revert TaxTooHigh(buyingTax_);
         _buyingTax = buyingTax_;
         emit TaxesUpdated(buyingTax_, _sellingTax);
     }
 
-    function setTaxEnabled(bool status) public onlyOwner {
+    function setTaxEnabled(bool status) external onlyOwner {
         _taxEnabled = status;
         if (status) emit TaxesEnabled();
         else emit TaxesDisabled();
     }
 
-    function setDex(address dex, bool status) public onlyOwner {
+    function setDex(address dex, bool status) external onlyOwner {
         if (dex == address(0)) revert InvalidDexAddress();
         _isDex[dex] = status;
         emit DexStatusChanged(dex, status);
     }
 
-    function setTaxWallet(address taxWallet) public onlyOwner {
+    function setTaxWallet(address taxWallet) external onlyOwner {
         if (taxWallet == address(0)) revert InvalidTaxWallet();
         address oldWallet = _taxWallet;
         _taxWallet = taxWallet;
@@ -171,27 +186,27 @@ contract CryptoSnackToken is ERC20, ERC20Burnable, ERC20Pausable, Ownable, Reent
     }
 
     // Whitelist management
-    function setWhitelist(address account, bool status) public onlyOwner {
+    function setWhitelist(address account, bool status) external onlyOwner {
         _whitelist[account] = status;
         emit WhitelistStatusChanged(account, status);
     }
 
-    function isWhitelisted(address account) public view returns (bool) {
+    function isWhitelisted(address account) external view returns (bool) {
         return _whitelist[account];
     }
 
     // Blacklist management
-    function setBlacklist(address account, bool status) public onlyOwner {
+    function setBlacklist(address account, bool status) external onlyOwner {
         _blacklist[account] = status;
         emit BlacklistStatusChanged(account, status);
     }
 
-    function isBlacklisted(address account) public view returns (bool) {
+    function isBlacklisted(address account) external view returns (bool) {
         return _blacklist[account];
     }
 
     // Token recovery
-    function freezeAccount(address account) public onlyOwner {
+    function freezeAccount(address account) external onlyOwner {
         if (_frozenUntil[account] > block.timestamp) revert AccountAlreadyFrozen();
 
         uint256 freezeTime = block.timestamp + 24 hours;
@@ -203,7 +218,7 @@ contract CryptoSnackToken is ERC20, ERC20Burnable, ERC20Pausable, Ownable, Reent
         address from,
         address to,
         uint256 amount
-    ) public onlyOwner nonReentrant {
+    ) external onlyOwner nonReentrant {
         if (_frozenUntil[from] <= block.timestamp) revert AccountNotFrozen();
 
         // Transfer tokens and reset freeze
@@ -223,24 +238,22 @@ contract CryptoSnackToken is ERC20, ERC20Burnable, ERC20Pausable, Ownable, Reent
 
     // Override functions
     function transfer(address to, uint256 value) public override returns (bool) {
-        address sender = _msgSender();
-        _transferWithTax(sender, to, value);
+        _transferWithTax(_msgSender(), to, value);
         return true;
     }
 
     function transferFrom(address from, address to, uint256 value) public override returns (bool) {
-        address spender = _msgSender();
-        _spendAllowance(from, spender, value); // would revert if insufficient balance
+        _spendAllowance(from, _msgSender(), value); // would revert if insufficient balance
         _transferWithTax(from, to, value);
         return true;
     }
 
-    function _calculateTax(uint256 amount, uint256 taxRate) internal pure returns (uint256) {
+    function _calculateTax(uint256 amount, uint256 taxRate) private pure returns (uint256) {
         return (amount * taxRate) / TAX_PRECISION;
     }
 
     function _transferWithTax(address from, address to, uint256 value) internal {
-        if (_whitelist[from] || _whitelist[to] || !_taxEnabled) {
+        if (!_taxEnabled || _whitelist[from] || _whitelist[to]) {
             super._transfer(from, to, value);
             return;
         }
@@ -253,8 +266,9 @@ contract CryptoSnackToken is ERC20, ERC20Burnable, ERC20Pausable, Ownable, Reent
         }
 
         if (taxAmount > 0) {
-            if (_taxWallet == address(0)) revert InvalidTaxWallet();
-            super._transfer(from, _taxWallet, taxAmount);
+            address taxWallet = _taxWallet;
+            if (taxWallet == address(0)) revert InvalidTaxWallet();
+            super._transfer(from, taxWallet, taxAmount);
             super._transfer(from, to, value - taxAmount);
         } else {
             super._transfer(from, to, value);
@@ -279,12 +293,12 @@ contract CryptoSnackToken is ERC20, ERC20Burnable, ERC20Pausable, Ownable, Reent
     }
 
     // Utilities
-    function reclaimToken(IERC20 token) public onlyOwner {
+    function reclaimToken(IERC20 token) external onlyOwner {
         uint256 balance = token.balanceOf(address(this));
         token.safeTransfer(owner(), balance);
     }
 
-    function reclaimBNB() public onlyOwner {
+    function reclaimBNB() external onlyOwner {
         (bool success, ) = owner().call{value: address(this).balance}("");
         if (!success) revert TransferFailed();
     }

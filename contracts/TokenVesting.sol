@@ -18,6 +18,9 @@ contract CryptoSnackVesting is Ownable, ReentrancyGuard {
         bool revoked;
     }
 
+    // Constants
+    uint32 private constant MAX_VESTING_TIME = 315360000; // 10 years (10 * 365 * 24 * 60 * 60)
+
     // Errors
     error InvalidBeneficiary();
     error NoVestingSchedule();
@@ -52,7 +55,7 @@ contract CryptoSnackVesting is Ownable, ReentrancyGuard {
     }
 
     // Views
-    function getToken() public view returns (IERC20) {
+    function getToken() external view returns (IERC20) {
         return _token;
     }
 
@@ -71,10 +74,11 @@ contract CryptoSnackVesting is Ownable, ReentrancyGuard {
     ) external onlyOwner {
         if (beneficiary == address(0)) revert InvalidBeneficiary();
         if (amount == 0) revert InvalidVestingParameters();
-        if (startTime <= block.timestamp) revert InvalidVestingParameters();
+        if (startTime < block.timestamp) revert InvalidVestingParameters();
         if (cliffDuration == 0) revert InvalidVestingParameters();
         if (vestingDuration == 0) revert InvalidVestingParameters();
         if (cliffDuration > vestingDuration) revert InvalidVestingParameters();
+        if (vestingDuration > MAX_VESTING_TIME) revert InvalidVestingParameters();
         if (_vestingSchedules[beneficiary].totalAmount != 0) revert VestingAlreadyExists();
         if (_token.balanceOf(address(this)) < amount) revert InsufficientTokenBalance();
 
@@ -110,9 +114,8 @@ contract CryptoSnackVesting is Ownable, ReentrancyGuard {
         if (releasable == 0) revert NothingToRelease();
 
         schedule.releasedAmount += releasable;
+        _token.safeTransfer(beneficiary, releasable);
         emit TokensReleased(beneficiary, releasable);
-
-        _token.transfer(beneficiary, releasable);
     }
 
     /// @notice Would automatically transfer releasable tokens to the beneficiary and then transfer the remaining tokens to the owner
@@ -126,13 +129,13 @@ contract CryptoSnackVesting is Ownable, ReentrancyGuard {
         uint256 releasable = _getReleasableAmount(beneficiary);
         if (releasable > 0) {
             schedule.releasedAmount += releasable;
-            _token.transfer(beneficiary, releasable);
+            _token.safeTransfer(beneficiary, releasable);
             emit TokensReleased(beneficiary, releasable);
         }
 
         uint256 remaining = schedule.totalAmount - schedule.releasedAmount;
         if (remaining > 0) {
-            _token.transfer(owner(), remaining);
+            _token.safeTransfer(owner(), remaining);
             emit TokensRefunded(remaining);
         }
 
@@ -161,19 +164,19 @@ contract CryptoSnackVesting is Ownable, ReentrancyGuard {
         return vestedAmount - schedule.releasedAmount;
     }
 
-    function getVestedAmount(address beneficiary) external view returns (uint256) {
+    function getReleasableAmount(address beneficiary) external view returns (uint256) {
         return _getReleasableAmount(beneficiary);
     }
 
     // Utilities
-    function reclaimToken(IERC20 token) public onlyOwner {
+    function reclaimToken(IERC20 token) external onlyOwner {
         if (token == _token) revert TransferFailed();
 
         uint256 balance = token.balanceOf(address(this));
         token.safeTransfer(owner(), balance);
     }
 
-    function reclaimBNB() public onlyOwner {
+    function reclaimBNB() external onlyOwner {
         (bool success, ) = owner().call{value: address(this).balance}("");
         if (!success) revert TransferFailed();
     }
