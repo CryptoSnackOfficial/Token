@@ -854,7 +854,7 @@ describe("CryptoSnackToken", function () {
             const burnAmount = ethers.parseEther("100");
 
             await expect(token.connect(addr1).burn(burnAmount))
-                .to.be.revertedWithCustomError(token, "BurnDisabled");
+                .to.be.revertedWithCustomError(token, "BurnDisallowed");
         });
 
         it("Should allow anyone to burn when burn is enabled", async function () {
@@ -909,7 +909,7 @@ describe("CryptoSnackToken", function () {
 
             it("Should prevent non-owner from burnFrom when burn is disabled", async function () {
                 await expect(token.connect(addr2).burnFrom(addr1.address, burnAmount))
-                    .to.be.revertedWithCustomError(token, "BurnDisabled");
+                    .to.be.revertedWithCustomError(token, "BurnDisallowed");
             });
 
             it("Should allow approved address to burnFrom when burn is enabled", async function () {
