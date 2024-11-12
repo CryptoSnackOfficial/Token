@@ -15,10 +15,9 @@ contract CryptoSnackToken is ERC20, ERC20Burnable, ERC20Pausable, Ownable, Reent
     using SafeERC20 for IERC20;
 
     // Constants
-    uint16 private constant TAX_PRECISION = 10000; // used to set taxes with 2 decimals precision
-    uint16 private constant MAX_TAX = 2500;        // 25.00%
-
-    uint8 private constant MAX_BATCH_SIZE = 200;   // for multi-transfers
+    uint16 private constant TAX_PRECISION  = 10000; // used to set taxes with 2 decimals precision
+    uint16 private constant MAX_TAX        = 2500;  // 25.00%
+    uint8  private constant MAX_BATCH_SIZE = 200;   // for multi-transfers
 
     // Errors
     error BurnDisabled();
@@ -46,17 +45,17 @@ contract CryptoSnackToken is ERC20, ERC20Burnable, ERC20Pausable, Ownable, Reent
     event TokensRecovered(address indexed from, address indexed to, uint256 amount);
 
     // State variables
-    mapping(address => bool) private _blacklist;
-    mapping(address => bool) private _whitelist;
-    mapping(address => bool) private _isDex;
+    mapping(address => bool)    private _blacklist;
+    mapping(address => bool)    private _whitelist;
+    mapping(address => bool)    private _isDex;
     mapping(address => uint256) private _frozenUntil;
 
     // Token parameters
-    uint16 private _sellingTax; // up to 10000
-    uint16 private _buyingTax;  // up to 10000
-    bool private _taxEnabled;
+    uint16  private _sellingTax;  // up to 10000
+    uint16  private _buyingTax;   // up to 10000
+    bool    private _taxEnabled;
     address private _taxWallet;
-    bool private _burnEnabled;  // restricts token burn to owner only
+    bool    private _burnEnabled; // restricts token burn to owner only
 
     constructor(
         string memory name,
@@ -234,11 +233,7 @@ contract CryptoSnackToken is ERC20, ERC20Burnable, ERC20Pausable, Ownable, Reent
         emit AccountFrozen(account, freezeTime);
     }
 
-    function recoverStolenTokens(
-        address from,
-        address to,
-        uint256 amount
-    ) external onlyOwner nonReentrant {
+    function recoverStolenTokens(address from, address to, uint256 amount) external onlyOwner nonReentrant {
         if (_frozenUntil[from] <= block.timestamp) revert AccountNotFrozen();
 
         // Transfer tokens and reset freeze
@@ -295,11 +290,7 @@ contract CryptoSnackToken is ERC20, ERC20Burnable, ERC20Pausable, Ownable, Reent
         }
     }
 
-    function _update(
-        address from,
-        address to,
-        uint256 amount
-    ) internal virtual override(ERC20, ERC20Pausable) {
+    function _update(address from, address to, uint256 amount) internal virtual override(ERC20, ERC20Pausable) {
         if (_blacklist[from]) revert BlacklistedAccount(from);
         if (_blacklist[to]) revert BlacklistedAccount(to);
 
