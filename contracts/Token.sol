@@ -269,7 +269,7 @@ contract CryptoSnackToken is ERC20, ERC20Burnable, ERC20Pausable, Ownable, Reent
 
     function _transferWithTax(address from, address to, uint256 value) internal {
         if (!_taxEnabled || _whitelist[from] || _whitelist[to]) {
-            super._transfer(from, to, value);
+            _transfer(from, to, value);
             return;
         }
 
@@ -283,10 +283,10 @@ contract CryptoSnackToken is ERC20, ERC20Burnable, ERC20Pausable, Ownable, Reent
         if (taxAmount > 0) {
             address taxWallet = _taxWallet;
             if (taxWallet == address(0)) revert InvalidTaxWallet();
-            super._transfer(from, taxWallet, taxAmount);
-            super._transfer(from, to, value - taxAmount);
+            _transfer(from, taxWallet, taxAmount);
+            _transfer(from, to, value - taxAmount);
         } else {
-            super._transfer(from, to, value);
+            _transfer(from, to, value);
         }
     }
 
