@@ -16,11 +16,12 @@ contract CryptoSnackToken is ERC20, ERC20Burnable, ERC20Pausable, Ownable, Reent
 
     // Constants
     uint16 private constant TAX_PRECISION = 10000; // used to set taxes with 2 decimals precision
-    uint16 private constant MAX_TAX = 2500; // 25.00%
+    uint16 private constant MAX_TAX = 2500;        // 25.00%
 
-    uint8 private constant MAX_BATCH_SIZE = 200; // for multi-transfers
+    uint8 private constant MAX_BATCH_SIZE = 200;   // for multi-transfers
 
     // Errors
+    error BurnDisabled();
     error ArraysLengthMismatch();
     error InvalidBatchLength();
     error BlacklistedAccount(address account);
@@ -55,6 +56,7 @@ contract CryptoSnackToken is ERC20, ERC20Burnable, ERC20Pausable, Ownable, Reent
     uint16 private _buyingTax;  // up to 10000
     bool private _taxEnabled;
     address private _taxWallet;
+    bool private _burnEnabled;  // restricts token burn to owner only
 
     constructor(
         string memory name,
@@ -71,6 +73,7 @@ contract CryptoSnackToken is ERC20, ERC20Burnable, ERC20Pausable, Ownable, Reent
         _sellingTax = sellingTax_;
         _buyingTax = buyingTax_;
         _taxEnabled = sellingTax_ > 0 || buyingTax_ > 0;
+        _burnEnabled = false;
     }
 
     // Basic operations
@@ -79,7 +82,20 @@ contract CryptoSnackToken is ERC20, ERC20Burnable, ERC20Pausable, Ownable, Reent
         emit TokensMinted(to, amount);
     }
 
-    // burn methods are implemented in ERC20Burnable
+    // Burn
+    function burn(uint256 value) public override {
+        if (!_burnEnabled && _msgSender() != owner()) revert BurnDisabled();
+        super.burn(value);
+    }
+
+    function burnFrom(address account, uint256 value) public override {
+        if (!_burnEnabled && _msgSender() != owner()) revert BurnDisabled();
+        super.burnFrom(account, value);
+    }
+
+    function setBurnEnabled(bool burnEnabled_) external onlyOwner {
+        _burnEnabled = burnEnabled_;
+    }
 
     // Views
     function getBuyingTax() external view returns (uint256) {
@@ -102,6 +118,10 @@ contract CryptoSnackToken is ERC20, ERC20Burnable, ERC20Pausable, Ownable, Reent
         return _taxWallet;
     }
 
+    function getBurnEnabled() external view returns (bool) {
+        return _burnEnabled;
+    }
+
     // Mass distribution (e.g. for airdrops)
     function multiTransfer(
         address[] calldata recipients,
@@ -116,14 +136,14 @@ contract CryptoSnackToken is ERC20, ERC20Burnable, ERC20Pausable, Ownable, Reent
 
         for (uint256 i = 0; i < length;) {
             totalAmount += amounts[i];
-            unchecked { ++i; }
+            unchecked {++i;}
         }
 
         if (balanceOf(sender) < totalAmount) revert TransferFailed();
 
         for (uint256 i = 0; i < length;) {
             _transfer(sender, recipients[i], amounts[i]);
-            unchecked { ++i; }
+            unchecked {++i;}
         }
     }
 
@@ -140,7 +160,7 @@ contract CryptoSnackToken is ERC20, ERC20Burnable, ERC20Pausable, Ownable, Reent
 
         for (uint256 i = 0; i < length;) {
             _transfer(sender, recipients[i], amount);
-            unchecked { ++i; }
+            unchecked {++i;}
         }
     }
 
@@ -299,7 +319,7 @@ contract CryptoSnackToken is ERC20, ERC20Burnable, ERC20Pausable, Ownable, Reent
     }
 
     function reclaimBNB() external onlyOwner {
-        (bool success, ) = owner().call{value: address(this).balance}("");
+        (bool success,) = owner().call{value: address(this).balance}("");
         if (!success) revert TransferFailed();
     }
 

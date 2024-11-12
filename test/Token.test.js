@@ -835,4 +835,112 @@ describe("CryptoSnackToken", function () {
                 .to.be.revertedWithCustomError(token, "OwnableUnauthorizedAccount");
         });
     });
+
+    describe("Burn Functionality", function () {
+        beforeEach(async function () {
+            await token.transfer(addr1.address, ethers.parseEther("1000"));
+        });
+
+        it("Should allow owner to burn tokens when burn is disabled", async function () {
+            const burnAmount = ethers.parseEther("100");
+            const initialSupply = await token.totalSupply();
+
+            await token.burn(burnAmount);
+
+            expect(await token.totalSupply()).to.equal(initialSupply - burnAmount);
+        });
+
+        it("Should prevent non-owner from burning when burn is disabled", async function () {
+            const burnAmount = ethers.parseEther("100");
+
+            await expect(token.connect(addr1).burn(burnAmount))
+                .to.be.revertedWithCustomError(token, "BurnDisabled");
+        });
+
+        it("Should allow anyone to burn when burn is enabled", async function () {
+            await token.setBurnEnabled(true);
+            const burnAmount = ethers.parseEther("100");
+            const initialSupply = await token.totalSupply();
+            const initialBalance = await token.balanceOf(addr1.address);
+
+            await token.connect(addr1).burn(burnAmount);
+
+            expect(await token.totalSupply()).to.equal(initialSupply - burnAmount);
+            expect(await token.balanceOf(addr1.address)).to.equal(initialBalance - burnAmount);
+        });
+
+        it("Should prevent burning more tokens than balance", async function () {
+            await token.setBurnEnabled(true);
+            const balance = await token.balanceOf(addr1.address);
+            const burnAmount = balance + BigInt(1);
+
+            await expect(token.connect(addr1).burn(burnAmount))
+                .to.be.revertedWithCustomError(token, "ERC20InsufficientBalance");
+        });
+
+        describe("BurnFrom Functionality", function () {
+            const approvalAmount = ethers.parseEther("500");
+            const burnAmount = ethers.parseEther("100");
+
+            beforeEach(async function () {
+                await token.connect(addr1).approve(owner.address, approvalAmount);
+                await token.connect(addr1).approve(addr2.address, approvalAmount);
+            });
+
+            it("Should allow owner to burnFrom when burn is disabled", async function () {
+                const initialSupply = await token.totalSupply();
+                const initialBalance = await token.balanceOf(addr1.address);
+
+                await token.burnFrom(addr1.address, burnAmount);
+
+                expect(await token.totalSupply()).to.equal(initialSupply - burnAmount);
+                expect(await token.balanceOf(addr1.address)).to.equal(initialBalance - burnAmount);
+                expect(await token.allowance(addr1.address, owner.address))
+                    .to.equal(approvalAmount - burnAmount);
+            });
+
+            it("Should prevent owner from burnFrom without allowance when burn is disabled", async function () {
+                const newAddr = addrs[0];
+                await token.transfer(newAddr.address, burnAmount);
+
+                await expect(token.burnFrom(newAddr.address, burnAmount))
+                    .to.be.revertedWithCustomError(token, "ERC20InsufficientAllowance");
+            });
+
+            it("Should prevent non-owner from burnFrom when burn is disabled", async function () {
+                await expect(token.connect(addr2).burnFrom(addr1.address, burnAmount))
+                    .to.be.revertedWithCustomError(token, "BurnDisabled");
+            });
+
+            it("Should allow approved address to burnFrom when burn is enabled", async function () {
+                await token.setBurnEnabled(true);
+                const initialSupply = await token.totalSupply();
+                const initialBalance = await token.balanceOf(addr1.address);
+
+                await token.connect(addr2).burnFrom(addr1.address, burnAmount);
+
+                expect(await token.totalSupply()).to.equal(initialSupply - burnAmount);
+                expect(await token.balanceOf(addr1.address)).to.equal(initialBalance - burnAmount);
+                expect(await token.allowance(addr1.address, addr2.address))
+                    .to.equal(approvalAmount - burnAmount);
+            });
+
+            it("Should prevent burnFrom without sufficient allowance", async function () {
+                await token.setBurnEnabled(true);
+                const burnAmount = approvalAmount + BigInt(1);
+
+                await expect(token.connect(addr2).burnFrom(addr1.address, burnAmount))
+                    .to.be.revertedWithCustomError(token, "ERC20InsufficientAllowance");
+            });
+
+            it("Should prevent burnFrom for amount exceeding balance", async function () {
+                await token.setBurnEnabled(true);
+                const balance = await token.balanceOf(addr1.address);
+                await token.connect(addr1).approve(addr2.address, balance + BigInt(1));
+
+                await expect(token.connect(addr2).burnFrom(addr1.address, balance + BigInt(1)))
+                    .to.be.revertedWithCustomError(token, "ERC20InsufficientBalance");
+            });
+        });
+    });
 });

@@ -177,7 +177,7 @@ contract CryptoSnackVesting is Ownable, ReentrancyGuard {
     }
 
     function reclaimBNB() external onlyOwner {
-        (bool success, ) = owner().call{value: address(this).balance}("");
+        (bool success,) = owner().call{value: address(this).balance}("");
         if (!success) revert TransferFailed();
     }
 
