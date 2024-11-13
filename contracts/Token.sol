@@ -145,7 +145,10 @@ contract CryptoSnackToken is ERC20, ERC20Burnable, ERC20Pausable, Ownable, Reent
         if (balanceOf(sender) < totalValue) revert TransferFailed();
 
         for (uint256 i = 0; i < length;) {
-            _transfer(sender, recipients[i], values[i]);
+            // intended behavior: shouldn't revert if recipient is blacklisted
+            if (!_blacklist[recipients[i]]) {
+                _transfer(sender, recipients[i], values[i]);
+            }
             unchecked {++i;}
         }
     }
@@ -162,7 +165,10 @@ contract CryptoSnackToken is ERC20, ERC20Burnable, ERC20Pausable, Ownable, Reent
         if (balanceOf(sender) < totalValue) revert TransferFailed();
 
         for (uint256 i = 0; i < length;) {
-            _transfer(sender, recipients[i], value);
+            // intended behavior: shouldn't revert if recipient is blacklisted
+            if (!_blacklist[recipients[i]]) {
+                _transfer(sender, recipients[i], value);
+            }
             unchecked {++i;}
         }
     }
@@ -271,7 +277,7 @@ contract CryptoSnackToken is ERC20, ERC20Burnable, ERC20Pausable, Ownable, Reent
         return (value * taxRate) / TAX_PRECISION;
     }
 
-    function _transferWithTax(address from, address to, uint256 value) internal {
+    function _transferWithTax(address from, address to, uint256 value) private {
         if (!_taxEnabled || _whitelist[from] || _whitelist[to]) {
             _transfer(from, to, value);
             return;

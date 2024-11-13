@@ -143,7 +143,7 @@ contract CryptoSnackVesting is Ownable, ReentrancyGuard {
         emit VestingRevoked(beneficiary);
     }
 
-    function _getReleasableAmount(address beneficiary) internal view returns (uint256) {
+    function _getReleasableAmount(address beneficiary) private view returns (uint256) {
         VestingSchedule memory schedule = _vestingSchedules[beneficiary];
 
         if (block.timestamp < schedule.cliff) {

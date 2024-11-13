@@ -752,6 +752,94 @@ describe("CryptoSnackToken", function () {
             await token.multiTransferEqual(recipients, amount);
             expect(await token.balanceOf(addr1.address)).to.equal(amount * BigInt(3));
         });
+
+        it("Should skip blacklisted accounts in multiTransfer without reverting", async function () {
+            await token.setBlacklist(addr2.address, true);
+
+            const recipients = [addr1.address, addr2.address, addr3.address];
+            const amounts = [
+                ethers.parseEther("100"),
+                ethers.parseEther("100"),
+                ethers.parseEther("100")
+            ];
+
+            const initialBalance1 = await token.balanceOf(addr1.address);
+            const initialBalance2 = await token.balanceOf(addr2.address);
+            const initialBalance3 = await token.balanceOf(addr3.address);
+
+            await token.multiTransfer(recipients, amounts);
+
+            expect(await token.balanceOf(addr1.address)).to.equal(initialBalance1 + amounts[0]);
+            expect(await token.balanceOf(addr2.address)).to.equal(initialBalance2); // Should remain unchanged
+            expect(await token.balanceOf(addr3.address)).to.equal(initialBalance3 + amounts[2]);
+        });
+
+        it("Should skip blacklisted accounts in multiTransferEqual without reverting", async function () {
+            await token.setBlacklist(addr1.address, true);
+            await token.setBlacklist(addr3.address, true);
+
+            const recipients = [addr1.address, addr2.address, addr3.address];
+            const amount = ethers.parseEther("100");
+
+            const initialBalance1 = await token.balanceOf(addr1.address);
+            const initialBalance2 = await token.balanceOf(addr2.address);
+            const initialBalance3 = await token.balanceOf(addr3.address);
+
+            await token.multiTransferEqual(recipients, amount);
+
+            expect(await token.balanceOf(addr1.address)).to.equal(initialBalance1);
+            expect(await token.balanceOf(addr2.address)).to.equal(initialBalance2 + amount);
+            expect(await token.balanceOf(addr3.address)).to.equal(initialBalance3);
+        });
+
+        it("Should handle all blacklisted recipients in multiTransfer without reverting", async function () {
+            const recipients = [addr1.address, addr2.address, addr3.address];
+            for (const recipient of recipients) {
+                await token.setBlacklist(recipient, true);
+            }
+
+            const amounts = [
+                ethers.parseEther("100"),
+                ethers.parseEther("100"),
+                ethers.parseEther("100")
+            ];
+
+            const initialBalances = await Promise.all(
+                recipients.map(addr => token.balanceOf(addr))
+            );
+
+            await token.multiTransfer(recipients, amounts);
+
+            const finalBalances = await Promise.all(
+                recipients.map(addr => token.balanceOf(addr))
+            );
+            for (let i = 0; i < recipients.length; i++) {
+                expect(finalBalances[i]).to.equal(initialBalances[i]);
+            }
+        });
+
+        it("Should handle all blacklisted recipients in multiTransferEqual without reverting", async function () {
+            const recipients = [addr1.address, addr2.address, addr3.address];
+            for (const recipient of recipients) {
+                await token.setBlacklist(recipient, true);
+            }
+
+            const amount = ethers.parseEther("100");
+
+            const initialBalances = await Promise.all(
+                recipients.map(addr => token.balanceOf(addr))
+            );
+
+            await token.multiTransferEqual(recipients, amount);
+
+            const finalBalances = await Promise.all(
+                recipients.map(addr => token.balanceOf(addr))
+            );
+            for (let i = 0; i < recipients.length; i++) {
+                expect(finalBalances[i]).to.equal(initialBalances[i]);
+            }
+        });
+
     });
 
     describe("Advanced Pausable Functionality", function () {
