@@ -9,7 +9,7 @@ import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 
 /**
- * @title CryptoSnackToken
+ * @title CryptoSnack
  */
 contract CryptoSnackToken is ERC20, ERC20Burnable, ERC20Pausable, Ownable, ReentrancyGuard {
     using SafeERC20 for IERC20;
@@ -324,6 +324,14 @@ contract CryptoSnackToken is ERC20, ERC20Burnable, ERC20Pausable, Ownable, Reent
         if (!success) revert TransferFailed();
     }
 
-    // To receive BNB
+    /**
+     * @dev This function is called for plain Ether transfers, i.e. for every call with empty calldata.
+     */
     receive() external payable {}
+
+    /**
+     * @dev Fallback function is executed if none of the other functions match the function
+     * identifier or no data was provided with the function call.
+     */
+    fallback() external payable {}
 }

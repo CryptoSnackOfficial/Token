@@ -2,39 +2,51 @@
 
 ## Deployment
 
-Fill `.env` file:
+Fill `.env` file
+(specify [private key](https://support.metamask.io/managing-my-wallet/secret-recovery-phrase-and-private-keys/how-to-export-an-accounts-private-key/)):
 
 ```dotenv
 PRIVATE_KEY=
-BSCSCAN_API_KEY=
+BSCSCAN_API_KEY=IP5DATFUJXRXVE2W44M9ZNWIV2AM4FAVV6
 
-# should be filled later, after deployment
+TOKEN_NAME=CryptoSnack
+TOKEN_SYMBOL=SNACK
+INITIAL_SUPPLY=1000000000
+SELLING_TAX=250
+BUYING_TAX=250
+
 TOKEN_ADDRESS=
 ```
-
-Edit a deployment script (`scripts/deploy.js`) to match your needs.
 
 Run script:
 
 ```bash
-npx hardhat run scripts/deploy.js --network bscTestnet
+npx hardhat run scripts/deploy-token.ts --network bsc
+```
+
+Edit `.env` file to include `TOKEN_ADDRESS` value.
+
+Run script:
+
+```bash
+npx hardhat run scripts/deploy-vesting.ts --network bsc
 ```
 
 ## DEX management
 
 To take fees for swapping on DEX, the DEX wallet should be added to the list.
 
-Usage:
-
-```bash
-npx hardhat run scripts/manage-dex.js --network <network> -- <add|remove> <dex-address>
-```
-
 Example (for [pancakeswap](https://docs.pancakeswap.finance/developers/smart-contracts)):
 
 ```bash
-npx hardhat run scripts/manage-dex.js --network bscTestnet -- add 0x10ED43C718714eb63d5aA57B78B54704E256024E # router v2
-npx hardhat run scripts/manage-dex.js --network bscTestnet -- add 0x13f4EA83D0bd40E75C8222255bc855a974568Dd4 # router v3
+# router v2
+setDex("0x10ED43C718714eb63d5aA57B78B54704E256024E", true);
+
+# router v3
+setDex("0x13f4EA83D0bd40E75C8222255bc855a974568Dd4", true);
+
+# stableswap
+setDex("0xC6665d98Efd81f47B03801187eB46cbC63F328B0", true)
 ```
 
 ## Run tests

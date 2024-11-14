@@ -39,7 +39,7 @@ describe("CryptoSnackVesting", function() {
         await token.setTaxEnabled(false);
 
         // Transfer tokens to vesting contract
-        await token.transfer(await vesting.getAddress(), VESTING_AMOUNT);
+        await token.transfer(await vesting.getAddress(), VESTING_AMOUNT * BigInt(2));
     });
 
     describe("Deployment", function() {
@@ -52,7 +52,7 @@ describe("CryptoSnackVesting", function() {
         });
 
         it("Should have correct token balance", async function() {
-            expect(await token.balanceOf(await vesting.getAddress())).to.equal(VESTING_AMOUNT);
+            expect(await token.balanceOf(await vesting.getAddress())).to.equal(VESTING_AMOUNT * BigInt(2));
         });
     });
 
@@ -328,6 +328,84 @@ describe("CryptoSnackVesting", function() {
             // After vesting
             await time.increaseTo(startTime + 14400);
             expect(await vesting.getReleasableAmount(beneficiary.address)).to.equal(VESTING_AMOUNT);
+        });
+    });
+
+    describe("Total Allocation Tracking", function() {
+        beforeEach(async function() {
+            const currentTime = await time.latest();
+            const startTime = currentTime + 3600;
+
+            // Create first vesting schedule
+            await vesting.createVestingSchedule(
+                beneficiary.address,
+                VESTING_AMOUNT,
+                startTime,
+                7200, // 2 hour cliff
+                14400, // 4 hour vesting
+                true
+            );
+        });
+
+        it("Should track initial allocation correctly", async function() {
+            expect(await vesting.getTotalAllocated()).to.equal(VESTING_AMOUNT);
+        });
+
+        it("Should update allocation after partial release", async function() {
+            await time.increase(10800); // 3 hours (past cliff)
+
+            const totalBefore = await vesting.getTotalAllocated();
+            await vesting.connect(beneficiary).release();
+            const totalAfter = await vesting.getTotalAllocated();
+
+            expect(totalAfter).to.be.lt(totalBefore);
+            expect(totalAfter).to.be.gt(0);
+        });
+
+        it("Should update allocation after full vesting completion", async function() {
+            await time.increase(20000); // Past full vesting duration
+
+            await vesting.connect(beneficiary).release();
+            const totalAfter = await vesting.getTotalAllocated();
+
+            expect(totalAfter).to.equal(0);
+        });
+
+        it("Should update allocation correctly after revocation", async function() {
+            await time.increase(10800); // 3 hours (past cliff)
+
+            await vesting.revoke(beneficiary.address);
+            const totalAfter = await vesting.getTotalAllocated();
+
+            expect(totalAfter).to.equal(0);
+        });
+
+        it("Should track multiple schedules correctly", async function() {
+            const currentTime = await time.latest();
+            const startTime = currentTime + 3600;
+
+            // Create second vesting schedule
+            await vesting.createVestingSchedule(
+                addr2.address,
+                VESTING_AMOUNT,
+                startTime,
+                7200,
+                14400,
+                true
+            );
+
+            expect(await vesting.getTotalAllocated()).to.equal(VESTING_AMOUNT * BigInt(2));
+
+            // Release for first beneficiary
+            await time.increase(20000);
+            await vesting.connect(beneficiary).release();
+
+            expect(await vesting.getTotalAllocated()).to.equal(VESTING_AMOUNT);
+
+            // Release for second beneficiary
+            await vesting.connect(addr2).release();
+
+            expect(await vesting.getTotalAllocated()).to.equal(0);
         });
     });
 });

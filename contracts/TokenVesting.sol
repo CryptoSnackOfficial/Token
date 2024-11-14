@@ -5,6 +5,9 @@ import "@openzeppelin/contracts/access/Ownable.sol";
 import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 
+/**
+ * @title CryptoSnack Vesting
+ */
 contract CryptoSnackVesting is Ownable, ReentrancyGuard {
     using SafeERC20 for IERC20;
 
@@ -46,6 +49,7 @@ contract CryptoSnackVesting is Ownable, ReentrancyGuard {
 
     // State variables
     mapping(address => VestingSchedule) private _vestingSchedules;
+    uint256 private _totalAllocated;
 
     // Token parameters
     IERC20 private immutable _token;
@@ -61,6 +65,10 @@ contract CryptoSnackVesting is Ownable, ReentrancyGuard {
 
     function getVestingSchedule(address beneficiary) external view returns (VestingSchedule memory) {
         return _vestingSchedules[beneficiary];
+    }
+
+    function getTotalAllocated() external view returns (uint256) {
+        return _totalAllocated;
     }
 
     // Vesting
@@ -80,7 +88,7 @@ contract CryptoSnackVesting is Ownable, ReentrancyGuard {
         if (cliffDuration > vestingDuration) revert InvalidVestingParameters();
         if (vestingDuration > MAX_VESTING_TIME) revert InvalidVestingParameters();
         if (_vestingSchedules[beneficiary].totalAmount != 0) revert VestingAlreadyExists();
-        if (_token.balanceOf(address(this)) < amount) revert InsufficientTokenBalance();
+        if (_token.balanceOf(address(this)) < amount + _totalAllocated) revert InsufficientTokenBalance();
 
         uint256 cliff = startTime + cliffDuration;
 
@@ -93,6 +101,8 @@ contract CryptoSnackVesting is Ownable, ReentrancyGuard {
             revocable: revocable,
             revoked: false
         });
+
+        _totalAllocated += amount;
 
         emit VestingScheduleCreated(
             beneficiary,
@@ -114,6 +124,7 @@ contract CryptoSnackVesting is Ownable, ReentrancyGuard {
         if (releasable == 0) revert NothingToRelease();
 
         schedule.releasedAmount += releasable;
+        _totalAllocated -= releasable;
         _token.safeTransfer(beneficiary, releasable);
         emit TokensReleased(beneficiary, releasable);
     }
@@ -129,12 +140,14 @@ contract CryptoSnackVesting is Ownable, ReentrancyGuard {
         uint256 releasable = _getReleasableAmount(beneficiary);
         if (releasable > 0) {
             schedule.releasedAmount += releasable;
+            _totalAllocated -= releasable;
             _token.safeTransfer(beneficiary, releasable);
             emit TokensReleased(beneficiary, releasable);
         }
 
         uint256 remaining = schedule.totalAmount - schedule.releasedAmount;
         if (remaining > 0) {
+            _totalAllocated -= remaining;
             _token.safeTransfer(owner(), remaining);
             emit TokensRefunded(remaining);
         }
@@ -168,6 +181,14 @@ contract CryptoSnackVesting is Ownable, ReentrancyGuard {
         return _getReleasableAmount(beneficiary);
     }
 
+    /**
+     * @dev Returns the current time.
+     * @return the current timestamp in seconds.
+     */
+    function getCurrentTime() internal view virtual returns (uint256) {
+        return block.timestamp;
+    }
+
     // Utilities
     function reclaimToken(IERC20 token) external onlyOwner {
         if (token == _token) revert TransferFailed();
@@ -181,6 +202,14 @@ contract CryptoSnackVesting is Ownable, ReentrancyGuard {
         if (!success) revert TransferFailed();
     }
 
-    // To receive BNB
+    /**
+     * @dev This function is called for plain Ether transfers, i.e. for every call with empty calldata.
+     */
     receive() external payable {}
+
+    /**
+     * @dev Fallback function is executed if none of the other functions match the function
+     * identifier or no data was provided with the function call.
+     */
+    fallback() external payable {}
 }
