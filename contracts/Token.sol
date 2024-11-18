@@ -60,13 +60,13 @@ contract CryptoSnackToken is ERC20, ERC20Burnable, ERC20Pausable, Ownable, Reent
     bool    private _burnEnabled; // restricts token burn to owner only
 
     constructor(
-        string memory name,
-        string memory symbol,
+        string memory tokenName,
+        string memory tokenSymbol,
         uint256 initialSupply,
         uint16 sellingTax,
         uint16 buyingTax,
         address initialOwner
-    ) ERC20(name, symbol) Ownable(initialOwner) {
+    ) ERC20(tokenName, tokenSymbol) Ownable(initialOwner) {
         if (sellingTax > MAX_TAX) revert TaxTooHigh(sellingTax);
         if (buyingTax > MAX_TAX) revert TaxTooHigh(buyingTax);
 
