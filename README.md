@@ -32,6 +32,16 @@ Run script:
 npx hardhat run scripts/deploy-vesting.ts --network bsc
 ```
 
+## Verify token
+
+Edit `.env` file to include `TOKEN_ADDRESS` value.
+
+Run script:
+
+```bash
+npx hardhat run scripts/verify-token.ts --network bsc
+```
+
 ## DEX management
 
 To take fees for swapping on DEX, the DEX wallet should be added to the list.
