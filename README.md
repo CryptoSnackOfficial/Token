@@ -14,7 +14,7 @@ TOKEN_SYMBOL=SNACK
 INITIAL_SUPPLY=10000000000
 SELLING_TAX=250
 BUYING_TAX=250
-// Once published, insert token address here for verifying and vesting contract
+# Once published, insert token address here for verifying and vesting contract
 TOKEN_ADDRESS=
 ```
 
